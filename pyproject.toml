@@ -1,0 +1,26 @@
+[project]
+name = "atelier"
+version = "0.1.0"
+description = "Personal prompt workbench for Midjourney concept art"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20.0",
+    "anthropic>=0.42.0",
+    "python-multipart>=0.0.18",
+    "pydantic-settings>=2.6.0",
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

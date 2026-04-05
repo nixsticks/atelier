@@ -1,0 +1,178 @@
+import asyncio
+import json
+from collections.abc import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from atelier.config import Settings
+from atelier.models import PromptNode
+from atelier.services.tree import get_ancestors
+
+COACHING_INSTRUCTIONS = """\
+You are a Midjourney prompt engineering coach inside Atelier, a prompt workbench for concept art.
+
+Your approach:
+- Give specific, cause-and-effect suggestions — not rules. Say "X produces Y; if you want Z, try W."
+- One change at a time when troubleshooting.
+- Explain what each change will produce before suggesting it.
+- Surface relevant Midjourney tips contextually — targeted, not a docs dump.
+- The user does NOT like highly stylized, obviously-AI-looking art. Prefer grounded, natural aesthetics.
+
+Your response format — follow this structure every time:
+
+### What to change
+One or two focused suggestions. Use a bullet per suggestion. For each, explain the cause and effect: what the change does and why.
+
+### Why
+Brief reasoning grounded in how Midjourney actually interprets the change (model behavior, parameter interaction, prompt weighting, etc.). Keep it to 2-3 sentences max.
+
+### Try this
+A complete, ready-to-use Midjourney prompt in a single code block. This must be a full prompt the user can copy-paste directly into Midjourney — not a fragment or diff.
+
+```
+the full refined prompt here with all parameters
+```
+
+Keep the whole response concise. No preamble, no filler. Go straight into the suggestions.
+"""
+
+
+class CoachingService:
+    def __init__(self, settings: Settings, knowledge: dict[str, str]):
+        self.settings = settings
+        self.knowledge = knowledge
+
+    def _build_prompt(
+        self,
+        node: PromptNode,
+        ancestors: list[PromptNode],
+        user_message: str,
+        prior_messages: list,
+    ) -> str:
+        parts: list[str] = []
+
+        # Coaching instructions + MJ knowledge
+        parts.append(COACHING_INSTRUCTIONS)
+        parts.append("\n# Midjourney Knowledge Base\n")
+        for name, content in self.knowledge.items():
+            parts.append(f"## {name}\n\n{content}\n")
+        parts.append("\n---\n")
+
+        # Iteration context (ancestor prompts, root-first)
+        non_self = [a for a in ancestors if a.id != node.id]
+        if non_self:
+            parts.append("# Prompt iteration history (oldest first)\n")
+            for a in non_self:
+                parts.append(f"**Prompt:** `{a.prompt_text}`")
+                if a.notes:
+                    parts.append(f"**Notes:** {a.notes}")
+                parts.append("")
+
+        # Current prompt
+        parts.append(f"# Current prompt\n\n`{node.prompt_text}`\n")
+        if node.notes:
+            parts.append(f"# User notes\n\n{node.notes}\n")
+
+        # Image feedback (text-based — CLI mode can't do vision)
+        if node.image and node.image.feedback:
+            parts.append(
+                f"# Feedback on generated result\n\n{node.image.feedback}\n"
+            )
+
+        # Prior coaching conversation on this node
+        if prior_messages:
+            parts.append("# Prior coaching conversation\n")
+            for msg in prior_messages:
+                label = "User" if msg.role == "user" else "Coach"
+                parts.append(f"**{label}:** {msg.content}\n")
+
+        # Current user message
+        parts.append(f"# Current request\n\n{user_message}")
+
+        return "\n".join(parts)
+
+    async def stream_response(
+        self,
+        db: AsyncSession,
+        node: PromptNode,
+        user_message: str,
+    ) -> AsyncGenerator[str, None]:
+        ancestors = await get_ancestors(db, node.id)
+
+        # Exclude the message we just saved (it's the current user_message)
+        prior = [
+            m
+            for m in node.coaching_messages
+            if not (
+                m.role == "user"
+                and m.content == user_message
+                and m == node.coaching_messages[-1]
+            )
+        ]
+
+        prompt = self._build_prompt(node, ancestors, user_message, prior)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude",
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+                "--max-turns",
+                "1",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            yield "Error: `claude` CLI not found. Make sure Claude Code is installed and `claude` is in your PATH."
+            return
+
+        proc.stdin.write(prompt.encode())
+        await proc.stdin.drain()
+        proc.stdin.close()
+
+        timed_out = False
+        try:
+            async for raw_line in proc.stdout:
+                line = raw_line.decode().strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get("type") == "stream_event":
+                        event = data.get("event", {})
+                        if (
+                            event.get("type") == "content_block_delta"
+                            and event.get("delta", {}).get("type") == "text_delta"
+                        ):
+                            text = event["delta"].get("text", "")
+                            if text:
+                                yield text
+                except json.JSONDecodeError:
+                    continue
+        except asyncio.CancelledError:
+            proc.kill()
+            raise
+
+        try:
+            rc = await asyncio.wait_for(proc.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            proc.kill()
+            rc = -1
+            timed_out = True
+
+        if timed_out:
+            yield "\n\n[Coach timed out]"
+        elif rc != 0:
+            stderr = await proc.stderr.read()
+            err_msg = stderr.decode().strip() if stderr else "Unknown error"
+            # Strip noisy bun warnings
+            err_lines = [
+                l for l in err_msg.splitlines()
+                if not l.startswith("warn:") and l.strip()
+            ]
+            clean_err = "\n".join(err_lines) if err_lines else err_msg
+            yield f"\n\n[Coaching error: {clean_err}]"

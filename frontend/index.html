@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atelier</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <aside id="sidebar">
+            <header class="sidebar-header">
+                <h1 class="logo">Atelier</h1>
+                <button id="new-project-btn" class="btn-icon" title="New project">+</button>
+            </header>
+
+            <section id="project-section">
+                <div id="project-selector">
+                    <select id="project-select">
+                        <option value="">Select project...</option>
+                    </select>
+                </div>
+            </section>
+
+            <section id="tree-section">
+                <div class="section-label">
+                    <span>Prompt tree</span>
+                    <button id="new-root-btn" class="btn-sm" title="New root prompt" disabled>+ Root</button>
+                </div>
+                <div id="prompt-tree"></div>
+            </section>
+        </aside>
+
+        <main id="workspace">
+            <div id="empty-state" class="empty-state">
+                <p class="empty-title">No prompt selected</p>
+                <p class="empty-sub">Select a node from the tree, or create a new root prompt.</p>
+            </div>
+
+            <div id="editor-panel" class="panel" hidden>
+                <div class="panel-header">
+                    <h2>Prompt</h2>
+                    <div class="panel-actions">
+                        <button id="copy-prompt-btn" class="btn-sm" title="Copy prompt to clipboard">Copy</button>
+                        <button id="fork-btn" class="btn-sm" title="Fork from this node">Fork</button>
+                        <button id="iterate-btn" class="btn-sm btn-primary" title="Create child refinement">Iterate</button>
+                    </div>
+                </div>
+                <textarea id="prompt-text" placeholder="Your Midjourney prompt..." rows="4"></textarea>
+                <textarea id="prompt-notes" placeholder="Notes — what you're going for, what to change..." rows="2"></textarea>
+                <div id="node-tags" class="tag-area">
+                    <div id="node-tag-list" class="tag-list"></div>
+                    <input id="node-tag-input" class="tag-input" type="text" placeholder="Add tag...">
+                </div>
+                <div class="editor-footer">
+                    <label id="star-toggle" class="star-label">
+                        <input type="checkbox" id="star-checkbox">
+                        <span class="star-icon">&#9734;</span>
+                    </label>
+                    <button id="save-prompt-btn" class="btn-sm">Save</button>
+                </div>
+            </div>
+
+            <div id="image-panel" class="panel" hidden>
+                <div class="panel-header">
+                    <h2>Result</h2>
+                </div>
+                <div id="image-dropzone" class="dropzone">
+                    <img id="image-preview" hidden>
+                    <p id="dropzone-label">Drop image here or click to upload</p>
+                    <input id="image-input" type="file" accept="image/*" hidden>
+                </div>
+                <textarea id="image-feedback" placeholder="What do you like? What needs to change?" rows="2"></textarea>
+                <div class="editor-footer">
+                    <button id="save-feedback-btn" class="btn-sm">Save feedback</button>
+                    <button id="delete-image-btn" class="btn-sm btn-danger" hidden>Remove image</button>
+                </div>
+            </div>
+        </main>
+
+        <aside id="coaching-sidebar">
+            <div class="panel-header">
+                <h2>Coach</h2>
+                <button id="clear-coaching-btn" class="btn-sm" title="Clear conversation">Clear</button>
+            </div>
+            <div id="coaching-messages"></div>
+            <div id="coaching-input-area">
+                <textarea id="coaching-input" placeholder="Ask for prompt help, or describe what to change..." rows="2"></textarea>
+                <button id="coaching-send-btn" class="btn-primary">Send</button>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Dialogs -->
+    <dialog id="new-project-dialog">
+        <form method="dialog">
+            <h3>New project</h3>
+            <input id="new-project-name" type="text" placeholder="Project name" required>
+            <textarea id="new-project-desc" placeholder="Description (optional)" rows="2"></textarea>
+            <div class="dialog-actions">
+                <button type="button" class="btn-sm" onclick="this.closest('dialog').close()">Cancel</button>
+                <button type="submit" class="btn-sm btn-primary">Create</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="iterate-dialog">
+        <form method="dialog">
+            <h3 id="iterate-dialog-title">Iterate</h3>
+            <textarea id="iterate-prompt-text" placeholder="Refined prompt..." rows="4"></textarea>
+            <textarea id="iterate-notes" placeholder="Notes on what changed..." rows="2"></textarea>
+            <div class="dialog-actions">
+                <button type="button" class="btn-sm" onclick="this.closest('dialog').close()">Cancel</button>
+                <button type="submit" class="btn-sm btn-primary">Create</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
