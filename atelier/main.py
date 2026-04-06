@@ -11,6 +11,7 @@ from atelier.config import Settings
 from atelier.database import create_engine, create_session_factory
 from atelier.models import Base
 from atelier.routers import coaching, images, projects, prompts, tags
+from atelier.services.claude_cli import find_claude_cli
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -61,6 +62,20 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
     app.state.knowledge = _load_knowledge(settings.knowledge_dir)
+
+    # Resolve `claude` CLI to an absolute path so subprocess calls work
+    # even when uvicorn was launched without the user's interactive shell
+    # PATH (e.g. from VS Code, launchd, a non-login subshell).
+    claude_path = find_claude_cli()
+    app.state.claude_cli = claude_path
+    if claude_path:
+        print(f"[atelier] using claude CLI at: {claude_path}")
+    else:
+        print(
+            "[atelier] WARNING: `claude` CLI not found. "
+            "Coaching and auto-description will fail until it's installed "
+            "and on PATH (or in ~/.local/bin)."
+        )
 
     yield
 

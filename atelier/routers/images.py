@@ -1,3 +1,4 @@
+import logging
 import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
@@ -16,6 +17,8 @@ from atelier.models import Image, PromptNode
 from atelier.schemas import ImageResponse, ImageUpdate
 from atelier.services.vision import describe_image
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/projects/{project_id}/nodes/{node_id}", tags=["images"])
 
 
@@ -23,13 +26,20 @@ async def _generate_description_task(
     session_factory: async_sessionmaker[AsyncSession],
     image_id: int,
     image_path: Path,
+    claude_cli: str | None,
 ) -> None:
     """Background task: describe an image and save the result.
 
-    Best-effort — any failure is swallowed so upload always succeeds.
+    Best-effort — failures are logged but never raised so upload always
+    succeeds. The user can manually retry from the UI if this fails.
     """
-    description = await describe_image(image_path)
+    try:
+        description = await describe_image(image_path, claude_cli=claude_cli)
+    except Exception:
+        logger.exception("auto-description failed for image_id=%s", image_id)
+        return
     if not description:
+        logger.warning("auto-description returned nothing for image_id=%s", image_id)
         return
     async with session_factory() as session:
         image = await session.get(Image, image_id)
@@ -136,6 +146,7 @@ async def upload_image(
         request.app.state.session_factory,
         image.id,
         _image_dir(settings, project_id) / image.filename,
+        request.app.state.claude_cli,
     )
     return image
 
@@ -181,6 +192,7 @@ async def upload_image_from_url(
         request.app.state.session_factory,
         image.id,
         _image_dir(settings, project_id) / image.filename,
+        request.app.state.claude_cli,
     )
     return image
 
@@ -209,6 +221,43 @@ async def update_image(
         node.image.feedback = body.feedback
     if body.description is not None:
         node.image.description = body.description
+    await db.flush()
+    await db.refresh(node.image)
+    return node.image
+
+
+@router.post("/image/describe", response_model=ImageResponse)
+async def describe_image_endpoint(
+    project_id: int,
+    node_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Synchronously generate (or regenerate) the auto-description.
+
+    Used as a manual fallback when background description failed or for
+    images that predate the auto-description feature. Blocks for as long
+    as the `claude` CLI takes (~30s typical, 120s max).
+    """
+    node = await _get_node(db, project_id, node_id)
+    if not node.image:
+        raise HTTPException(404, "No image for this node")
+    image_path = _image_dir(settings, project_id) / node.image.filename
+    if not image_path.exists():
+        raise HTTPException(404, f"Image file missing on disk: {node.image.filename}")
+
+    description = await describe_image(
+        image_path, claude_cli=request.app.state.claude_cli
+    )
+    if not description:
+        raise HTTPException(
+            502,
+            "Failed to generate description — check server logs. "
+            "The `claude` CLI may be unavailable, timed out, or returned an empty response.",
+        )
+
+    node.image.description = description
     await db.flush()
     await db.refresh(node.image)
     return node.image

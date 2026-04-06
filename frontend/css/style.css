@@ -389,6 +389,18 @@ textarea::placeholder { color: var(--text-muted); }
     margin: 10px 0 4px;
 }
 
+.field-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 10px 0 4px;
+}
+
+.field-label-row .field-label {
+    margin: 0;
+}
+
 .field-label .field-hint {
     font-weight: 400;
     text-transform: none;

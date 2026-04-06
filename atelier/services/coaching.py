@@ -39,9 +39,15 @@ Keep the whole response concise. No preamble, no filler. Go straight into the su
 
 
 class CoachingService:
-    def __init__(self, settings: Settings, knowledge: dict[str, str]):
+    def __init__(
+        self,
+        settings: Settings,
+        knowledge: dict[str, str],
+        claude_cli: str | None = None,
+    ):
         self.settings = settings
         self.knowledge = knowledge
+        self.claude_cli = claude_cli
 
     def _build_prompt(
         self,
@@ -151,8 +157,19 @@ class CoachingService:
         # tool (one extra turn) and we need to grant filesystem access to
         # the image directory. Otherwise keep the existing single-turn
         # behavior so coaching stays fast.
+        from atelier.services.claude_cli import find_claude_cli
+
+        binary = self.claude_cli or find_claude_cli()
+        if not binary:
+            yield (
+                "Error: `claude` CLI not found. Install Claude Code and make sure "
+                "`claude` is on your PATH (or in `~/.local/bin`). If it is, "
+                "restart the atelier server from a shell that has it on PATH."
+            )
+            return
+
         cli_args = [
-            "claude",
+            binary,
             "-p",
             "--output-format",
             "stream-json",
@@ -175,7 +192,7 @@ class CoachingService:
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:
-            yield "Error: `claude` CLI not found. Make sure Claude Code is installed and `claude` is in your PATH."
+            yield f"Error: `claude` CLI not found at {binary}."
             return
 
         proc.stdin.write(prompt.encode())

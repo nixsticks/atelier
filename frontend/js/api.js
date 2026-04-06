@@ -43,6 +43,8 @@ export const api = {
     updateImage: (pid, nid, patch) =>
         request(`/projects/${pid}/nodes/${nid}/image`, { method: 'PATCH', body: JSON.stringify(patch) }),
     deleteImage: (pid, nid) => request(`/projects/${pid}/nodes/${nid}/image`, { method: 'DELETE' }),
+    describeImage: (pid, nid) =>
+        request(`/projects/${pid}/nodes/${nid}/image/describe`, { method: 'POST' }),
 
     // Tags
     addNodeTag: (pid, nid, name) =>

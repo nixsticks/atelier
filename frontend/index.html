@@ -76,9 +76,12 @@
                     <p id="dropzone-label">Drop, paste, or click to upload</p>
                     <input id="image-input" type="file" accept="image/*" hidden>
                 </div>
-                <label class="field-label" for="image-description">
-                    Auto-description <span class="field-hint">(what the coach sees for ancestor nodes)</span>
-                </label>
+                <div class="field-label-row">
+                    <label class="field-label" for="image-description">
+                        Auto-description <span class="field-hint">(what the coach sees for ancestor nodes)</span>
+                    </label>
+                    <button type="button" id="regen-description-btn" class="btn-sm" title="Generate or regenerate the description from the image">Generate</button>
+                </div>
                 <textarea id="image-description" placeholder="Generating description..." rows="4"></textarea>
                 <label class="field-label" for="image-feedback">Your feedback</label>
                 <textarea id="image-feedback" placeholder="What do you like? What needs to change?" rows="2"></textarea>

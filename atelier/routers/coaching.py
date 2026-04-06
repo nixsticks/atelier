@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,13 +46,18 @@ async def coach(
     project_id: int,
     node_id: int,
     body: CoachingRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     knowledge: dict[str, str] = Depends(get_knowledge),
 ):
     node = await _get_node(db, project_id, node_id)
 
-    svc = CoachingService(settings=settings, knowledge=knowledge)
+    svc = CoachingService(
+        settings=settings,
+        knowledge=knowledge,
+        claude_cli=request.app.state.claude_cli,
+    )
 
     user_msg = CoachingMessage(
         prompt_node_id=node_id, role="user", content=body.message

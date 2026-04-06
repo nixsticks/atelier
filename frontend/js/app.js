@@ -337,7 +337,10 @@ function selectNode(node, skipRoute = false) {
         $('#image-description').value = node.image.description || '';
         $('#image-description').placeholder = node.image.description
             ? ''
-            : 'Generating description... (refresh to check)';
+            : 'Generating description...';
+        $('#regen-description-btn').hidden = false;
+        $('#regen-description-btn').disabled = false;
+        $('#regen-description-btn').textContent = node.image.description ? 'Regenerate' : 'Generate';
         maybePollDescription(node);
     } else {
         $('#image-preview').hidden = true;
@@ -346,6 +349,7 @@ function selectNode(node, skipRoute = false) {
         $('#image-feedback').value = '';
         $('#image-description').value = '';
         $('#image-description').placeholder = '';
+        $('#regen-description-btn').hidden = true;
     }
 
     // Load coaching
@@ -798,6 +802,40 @@ $('#delete-image-btn').addEventListener('click', async () => {
     await api.deleteImage(state.currentProject.id, state.currentNode.id);
     await refreshNodeAndTree();
     toast('Image removed');
+});
+
+$('#regen-description-btn').addEventListener('click', async () => {
+    if (!state.currentNode?.image) return;
+    const pid = state.currentProject.id;
+    const nid = state.currentNode.id;
+    const btn = $('#regen-description-btn');
+    const ta = $('#image-description');
+
+    // Cancel any in-flight auto-poll so it can't race with our manual call.
+    descriptionPollToken++;
+
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    const prevPlaceholder = ta.placeholder;
+    ta.placeholder = 'Generating description... (this can take ~30s)';
+
+    try {
+        const fresh = await api.describeImage(pid, nid);
+        // Only update UI if user is still on this node
+        if (state.currentNode?.id === nid) {
+            ta.value = fresh.description || '';
+            ta.placeholder = '';
+            state.currentNode.image = fresh;
+            btn.textContent = 'Regenerate';
+        }
+        toast('Description generated');
+    } catch (err) {
+        ta.placeholder = prevPlaceholder;
+        btn.textContent = state.currentNode?.image?.description ? 'Regenerate' : 'Generate';
+        toast(`Failed: ${err.message}`);
+    } finally {
+        btn.disabled = false;
+    }
 });
 
 // ===== Coaching =====
