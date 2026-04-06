@@ -44,6 +44,7 @@ async function navigateToRoute() {
             state.currentProject = project;
             projectSelect.value = projectId;
             $('#new-root-btn').disabled = false;
+            $('#delete-project-btn').disabled = false;
             await loadTree();
             if (nodeId) {
                 await selectNodeById(nodeId, true);
@@ -68,6 +69,49 @@ function toast(msg) {
     setTimeout(() => el.remove(), 2200);
 }
 
+// ===== Type-to-confirm dialog =====
+// Returns a promise that resolves true if the user types `expected` and
+// clicks Delete, false if they cancel or close the dialog any other way.
+function confirmDelete({ title, message, expected }) {
+    return new Promise((resolve) => {
+        const dialog = $('#confirm-delete-dialog');
+        const input = $('#confirm-delete-input');
+        const confirmBtn = $('#confirm-delete-confirm');
+        const cancelBtn = $('#confirm-delete-cancel');
+
+        $('#confirm-delete-title').textContent = title;
+        $('#confirm-delete-message').textContent = message;
+        $('#confirm-delete-expected').textContent = expected;
+        input.value = '';
+        confirmBtn.disabled = true;
+
+        const onInput = () => {
+            confirmBtn.disabled = input.value !== expected;
+        };
+        const cleanup = (result) => {
+            input.removeEventListener('input', onInput);
+            confirmBtn.removeEventListener('click', onConfirm);
+            cancelBtn.removeEventListener('click', onCancel);
+            dialog.removeEventListener('close', onCancel);
+            dialog.close();
+            resolve(result);
+        };
+        const onConfirm = () => {
+            if (input.value === expected) cleanup(true);
+        };
+        const onCancel = () => cleanup(false);
+
+        input.addEventListener('input', onInput);
+        confirmBtn.addEventListener('click', onConfirm);
+        cancelBtn.addEventListener('click', onCancel);
+        dialog.addEventListener('close', onCancel);
+
+        dialog.showModal();
+        // Focus the input after the dialog is fully open
+        setTimeout(() => input.focus(), 0);
+    });
+}
+
 // ===== Projects =====
 async function loadProjects() {
     state.projects = await api.listProjects();
@@ -80,17 +124,68 @@ async function loadProjects() {
         projectSelect.appendChild(opt);
     }
     $('#new-root-btn').disabled = !state.currentProject;
+    $('#delete-project-btn').disabled = !state.currentProject;
 }
 
 projectSelect.addEventListener('change', async () => {
     const id = projectSelect.value;
-    if (!id) { state.currentProject = null; state.tree = []; renderTree(); selectNode(null); pushRoute(); return; }
+    if (!id) {
+        state.currentProject = null;
+        state.tree = [];
+        renderTree();
+        selectNode(null);
+        $('#delete-project-btn').disabled = true;
+        pushRoute();
+        return;
+    }
     state.currentProject = await api.getProject(id);
     await loadTree();
     selectNode(null);
     $('#new-root-btn').disabled = false;
+    $('#delete-project-btn').disabled = false;
     pushRoute();
 });
+
+$('#delete-project-btn').addEventListener('click', async () => {
+    if (!state.currentProject) return;
+    const project = state.currentProject;
+    const nodeCount = countAllNodes(state.tree);
+    const suffix = nodeCount > 0
+        ? ` This will permanently delete ${nodeCount} prompt node${nodeCount === 1 ? '' : 's'}, all attached images, and all coaching history.`
+        : '';
+    const ok = await confirmDelete({
+        title: 'Delete project',
+        message: `You are about to delete the project "${project.name}".${suffix} This cannot be undone.`,
+        expected: project.name,
+    });
+    if (!ok) return;
+
+    try {
+        await api.deleteProject(project.id);
+    } catch (err) {
+        toast(`Delete failed: ${err.message}`);
+        return;
+    }
+    state.currentProject = null;
+    state.tree = [];
+    state.currentNode = null;
+    renderTree();
+    selectNode(null);
+    await loadProjects();
+    projectSelect.value = '';
+    $('#new-root-btn').disabled = true;
+    $('#delete-project-btn').disabled = true;
+    history.pushState(null, '', location.pathname);
+    toast('Project deleted');
+});
+
+function countAllNodes(treeNodes) {
+    let n = 0;
+    for (const node of treeNodes) {
+        n += 1 + countAllNodes(node.children || []);
+    }
+    return n;
+}
 
 $('#new-project-btn').addEventListener('click', () => {
     $('#new-project-name').value = '';
@@ -239,11 +334,18 @@ function selectNode(node, skipRoute = false) {
         $('#dropzone-label').hidden = true;
         $('#delete-image-btn').hidden = false;
         $('#image-feedback').value = node.image.feedback || '';
+        $('#image-description').value = node.image.description || '';
+        $('#image-description').placeholder = node.image.description
+            ? ''
+            : 'Generating description... (refresh to check)';
+        maybePollDescription(node);
     } else {
         $('#image-preview').hidden = true;
         $('#dropzone-label').hidden = false;
         $('#delete-image-btn').hidden = true;
         $('#image-feedback').value = '';
+        $('#image-description').value = '';
+        $('#image-description').placeholder = '';
     }
 
     // Load coaching
@@ -269,12 +371,66 @@ $('#copy-prompt-btn').addEventListener('click', () => {
     toast('Copied to clipboard');
 });
 
+function countDescendants(treeNode) {
+    let n = 0;
+    for (const child of treeNode.children || []) {
+        n += 1 + countDescendants(child);
+    }
+    return n;
+}
+
+function findInTree(nodes, id) {
+    for (const n of nodes) {
+        if (n.id === id) return n;
+        const hit = findInTree(n.children || [], id);
+        if (hit) return hit;
+    }
+    return null;
+}
+
+$('#delete-node-btn').addEventListener('click', async () => {
+    if (!state.currentNode) return;
+    const node = state.currentNode;
+    const treeNode = findInTree(state.tree, node.id);
+    const descendants = treeNode ? countDescendants(treeNode) : 0;
+    const label = node.name || (node.prompt_text.length > 50 ? node.prompt_text.slice(0, 50) + '…' : node.prompt_text);
+    const childPart = descendants > 0
+        ? ` along with ${descendants} child node${descendants === 1 ? '' : 's'}`
+        : '';
+    // Type the node name if it has one. Otherwise fall back to typing the
+    // word "delete" — the prompt text is too long/awkward to retype.
+    const expected = node.name || 'delete';
+    const ok = await confirmDelete({
+        title: 'Delete node',
+        message: `You are about to delete "${label}"${childPart}. This will also remove any attached images and coaching history. This cannot be undone.`,
+        expected,
+    });
+    if (!ok) return;
+
+    const parentId = node.parent_id;
+    try {
+        await api.deleteNode(state.currentProject.id, node.id);
+    } catch (err) {
+        toast(`Delete failed: ${err.message}`);
+        return;
+    }
+    await loadTree();
+    if (parentId) {
+        await selectNodeById(parentId);
+    } else {
+        selectNode(null);
+    }
+    toast('Deleted');
+});
+
 $('#iterate-btn').addEventListener('click', () => {
     if (!state.currentNode) return;
     $('#iterate-dialog-title').textContent = 'Iterate';
     $('#iterate-name').value = '';
     $('#iterate-prompt-text').value = state.currentNode.prompt_text;
     $('#iterate-notes').value = '';
+    resetRootImageUi();
+    $('#root-image-section').hidden = false;
     $('#iterate-dialog').showModal();
     $('#iterate-dialog').dataset.mode = 'iterate';
 });
@@ -285,11 +441,15 @@ $('#fork-btn').addEventListener('click', () => {
     $('#iterate-name').value = '';
     $('#iterate-prompt-text').value = state.currentNode.prompt_text;
     $('#iterate-notes').value = '';
+    resetRootImageUi();
+    $('#root-image-section').hidden = false;
     $('#iterate-dialog').showModal();
     $('#iterate-dialog').dataset.mode = 'fork';
 });
 
 $('#iterate-dialog').querySelector('form').addEventListener('submit', async (e) => {
+    // Root mode is handled by its own capture-phase listener.
+    if ($('#iterate-dialog').dataset.mode === 'root') return;
     if (!state.currentNode) return;
     const data = {
         parent_id: state.currentNode.id,
@@ -298,9 +458,43 @@ $('#iterate-dialog').querySelector('form').addEventListener('submit', async (e) 
         notes: $('#iterate-notes').value || null,
     };
     const newNode = await api.createNode(state.currentProject.id, data);
+    if (stagedRootImage) {
+        try {
+            await api.uploadImage(state.currentProject.id, newNode.id, stagedRootImage);
+        } catch (err) {
+            toast(`Image upload failed: ${err.message}`);
+        }
+    }
+    resetRootImageUi();
     await loadTree();
-    selectNode(newNode);
+    // Refetch so the freshly-attached image is present in state
+    const hydrated = await api.getNode(state.currentProject.id, newNode.id);
+    selectNode(hydrated);
 });
+
+// Staged image for the "new root prompt" dialog. Captured via drop/paste/
+// picker while the dialog is open, uploaded to the new node on submit.
+let stagedRootImage = null;
+
+function resetRootImageUi() {
+    stagedRootImage = null;
+    $('#root-image-section').hidden = true;
+    $('#root-image-preview').hidden = true;
+    $('#root-image-preview').src = '';
+    $('#root-image-label').hidden = false;
+    $('#root-image-label').textContent = 'Drop, paste, or click to attach an image (optional)';
+    $('#root-image-clear').hidden = true;
+    $('#root-image-input').value = '';
+}
+
+function stageRootImage(file) {
+    stagedRootImage = file;
+    const preview = $('#root-image-preview');
+    preview.src = URL.createObjectURL(file);
+    preview.hidden = false;
+    $('#root-image-label').hidden = true;
+    $('#root-image-clear').hidden = false;
+}
 
 $('#new-root-btn').addEventListener('click', () => {
     if (!state.currentProject) return;
@@ -308,9 +502,51 @@ $('#new-root-btn').addEventListener('click', () => {
     $('#iterate-name').value = '';
     $('#iterate-prompt-text').value = '';
     $('#iterate-notes').value = '';
+    resetRootImageUi();
+    $('#root-image-section').hidden = false;
     $('#iterate-dialog').showModal();
     $('#iterate-dialog').dataset.mode = 'root';
 });
+
+const rootDropzone = $('#root-image-dropzone');
+const rootImageInput = $('#root-image-input');
+
+rootDropzone.addEventListener('click', () => rootImageInput.click());
+rootDropzone.addEventListener('dragover', (e) => { e.preventDefault(); rootDropzone.classList.add('dragover'); });
+rootDropzone.addEventListener('dragleave', () => rootDropzone.classList.remove('dragover'));
+rootDropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    rootDropzone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) stageRootImage(file);
+});
+rootImageInput.addEventListener('change', () => {
+    if (rootImageInput.files[0]) stageRootImage(rootImageInput.files[0]);
+});
+$('#root-image-clear').addEventListener('click', () => resetRootImageUi());
+
+// Paste handler scoped to the create dialog (root / iterate / fork).
+// Whenever the dialog is open and the clipboard holds an image, stage
+// it for the new node and stop propagation so the global paste handler
+// doesn't upload it to the parent (currently selected) node by mistake.
+// Text paste is left untouched so the textareas still work normally.
+document.addEventListener('paste', (e) => {
+    const dialog = $('#iterate-dialog');
+    if (!dialog.open) return;
+
+    let imageFile = null;
+    for (const item of e.clipboardData?.items || []) {
+        if (item.type.startsWith('image/')) {
+            imageFile = item.getAsFile();
+            break;
+        }
+    }
+    if (!imageFile) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    stageRootImage(imageFile);
+}, true);
 
 // Override submit for root mode
 const origSubmit = $('#iterate-dialog').querySelector('form');
@@ -323,8 +559,18 @@ origSubmit.addEventListener('submit', async function rootHandler(e) {
         notes: $('#iterate-notes').value || null,
     };
     const newNode = await api.createNode(state.currentProject.id, data);
+    if (stagedRootImage) {
+        try {
+            await api.uploadImage(state.currentProject.id, newNode.id, stagedRootImage);
+        } catch (err) {
+            toast(`Image upload failed: ${err.message}`);
+        }
+    }
+    resetRootImageUi();
     await loadTree();
-    selectNode(newNode);
+    // Refetch the node so the freshly-attached image is present in state
+    const hydrated = await api.getNode(state.currentProject.id, newNode.id);
+    selectNode(hydrated);
     $('#iterate-dialog').close();
 }, true);
 
@@ -474,6 +720,45 @@ async function handleImageUpload(file) {
     toast('Image uploaded');
 }
 
+// ===== Description polling =====
+// Descriptions are generated in the background after upload. Poll the
+// image endpoint until it populates, then update the textarea — unless the
+// user navigated away or has started typing their own edit.
+let descriptionPollToken = 0;
+async function maybePollDescription(node) {
+    const token = ++descriptionPollToken;
+    if (!node.image || node.image.description) return;
+
+    const pid = node.project_id;
+    const nid = node.id;
+    const deadline = Date.now() + 120_000; // give up after 2 minutes
+
+    while (token === descriptionPollToken && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 3000));
+        if (token !== descriptionPollToken) return;
+        if (!state.currentNode || state.currentNode.id !== nid) return;
+
+        let fresh;
+        try {
+            fresh = await api.getImage(pid, nid);
+        } catch {
+            return;
+        }
+        if (!fresh?.description) continue;
+
+        // Merge into state + UI only if the user hasn't typed over it
+        const ta = $('#image-description');
+        if (ta.value.trim() === '') {
+            ta.value = fresh.description;
+            ta.placeholder = '';
+        }
+        if (state.currentNode && state.currentNode.id === nid) {
+            state.currentNode.image = fresh;
+        }
+        return;
+    }
+}
+
 async function handleImageUrl(url) {
     if (!state.currentNode) return;
     const label = $('#dropzone-label');
@@ -496,10 +781,16 @@ async function refreshNodeAndTree() {
     await loadTree();
 }
 
-$('#save-feedback-btn').addEventListener('click', async () => {
+$('#save-image-btn').addEventListener('click', async () => {
     if (!state.currentNode?.image) return;
-    await api.updateImageFeedback(state.currentProject.id, state.currentNode.id, $('#image-feedback').value);
-    toast('Feedback saved');
+    await api.updateImage(state.currentProject.id, state.currentNode.id, {
+        feedback: $('#image-feedback').value,
+        description: $('#image-description').value,
+    });
+    // Editing the description should cancel any in-flight auto-description
+    // poll so the background task doesn't clobber the user's edits.
+    descriptionPollToken++;
+    toast('Saved');
 });
 
 $('#delete-image-btn').addEventListener('click', async () => {

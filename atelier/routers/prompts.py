@@ -3,7 +3,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from atelier.dependencies import get_db
+from atelier.config import Settings
+from atelier.dependencies import get_db, get_settings
 from atelier.models import Image, Project, PromptNode
 from atelier.schemas import (
     PromptNodeCreate,
@@ -11,7 +12,11 @@ from atelier.schemas import (
     PromptNodeUpdate,
     PromptTreeNode,
 )
-from atelier.services.tree import get_ancestors, get_project_tree
+from atelier.services.tree import (
+    get_ancestors,
+    get_descendant_ids,
+    get_project_tree,
+)
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["prompts"])
 
@@ -93,10 +98,30 @@ async def update_node(
 
 @router.delete("/nodes/{node_id}", status_code=204)
 async def delete_node(
-    project_id: int, node_id: int, db: AsyncSession = Depends(get_db)
+    project_id: int,
+    node_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
     node = await _get_node(db, project_id, node_id)
+
+    # Collect every image filename under this subtree before the cascade
+    # delete wipes the rows. We unlink the files after the DB operation
+    # commits so a failed delete doesn't lose the on-disk originals.
+    descendant_ids = await get_descendant_ids(db, node_id)
+    img_result = await db.execute(
+        select(Image).where(Image.prompt_node_id.in_(descendant_ids))
+    )
+    image_filenames = [img.filename for img in img_result.scalars().all()]
+
     await db.delete(node)
+    await db.flush()
+
+    project_image_dir = settings.image_dir / str(project_id)
+    for fn in image_filenames:
+        path = project_image_dir / fn
+        if path.exists():
+            path.unlink()
 
 
 @router.get("/nodes/{node_id}/ancestors", response_model=list[PromptNodeResponse])

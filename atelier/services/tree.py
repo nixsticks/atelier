@@ -41,6 +41,21 @@ async def get_project_tree(
     return [build(r) for r in children_map.get(None, [])]
 
 
+async def get_descendant_ids(db: AsyncSession, node_id: int) -> list[int]:
+    """Return [node_id] plus all transitive descendant ids via recursive CTE."""
+    cte_query = text("""
+        WITH RECURSIVE descendants AS (
+            SELECT id FROM prompt_node WHERE id = :node_id
+            UNION ALL
+            SELECT pn.id FROM prompt_node pn
+            JOIN descendants d ON pn.parent_id = d.id
+        )
+        SELECT id FROM descendants
+    """)
+    result = await db.execute(cte_query, {"node_id": node_id})
+    return [row[0] for row in result.fetchall()]
+
+
 async def get_ancestors(
     db: AsyncSession, node_id: int
 ) -> list[PromptNode]:

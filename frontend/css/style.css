@@ -81,8 +81,14 @@ body {
     border-bottom: 1px solid var(--border-subtle);
 }
 
+#project-selector {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
 #project-select {
-    width: 100%;
+    flex: 1;
     padding: 6px 8px;
     background: var(--bg-raised);
     color: var(--text-primary);
@@ -364,9 +370,40 @@ textarea::placeholder { color: var(--text-muted); }
     object-fit: contain;
 }
 
-#dropzone-label {
+#dropzone-label, #root-image-label {
     color: var(--text-muted);
     font-size: 13px;
+}
+
+.field-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 10px 0 4px;
+}
+
+.field-label .field-hint {
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    opacity: 0.7;
+}
+
+#image-description {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-muted);
+}
+
+#root-image-section {
+    margin-top: 10px;
+}
+
+#root-image-clear {
+    margin-top: 6px;
 }
 
 /* ===== Coaching sidebar (right) ===== */
@@ -550,6 +587,8 @@ textarea::placeholder { color: var(--text-muted); }
 }
 
 .btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-icon:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-icon:disabled:hover { background: var(--bg-raised); color: var(--text-secondary); }
 
 .btn-sm {
     padding: 4px 10px;
@@ -578,6 +617,21 @@ textarea::placeholder { color: var(--text-muted); }
 
 .btn-danger { color: var(--danger); }
 .btn-danger:hover { background: rgba(196, 94, 94, 0.1); }
+
+.btn-danger-solid {
+    background: var(--danger);
+    border: 1px solid var(--danger);
+    color: #fff;
+    padding: 4px 14px;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.1s;
+}
+.btn-danger-solid:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-danger-solid:disabled { opacity: 0.35; cursor: not-allowed; }
 
 #coaching-send-btn {
     padding: 8px 16px;
@@ -623,6 +677,29 @@ dialog input[type="text"]:focus { outline: none; border-color: var(--accent); }
     justify-content: flex-end;
     gap: 8px;
     margin-top: 12px;
+}
+
+.confirm-message {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    margin-bottom: 14px;
+}
+
+.confirm-instructions {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.confirm-instructions code {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px 6px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
 }
 
 /* ===== Scrollbar ===== */

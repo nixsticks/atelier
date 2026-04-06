@@ -1,6 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +49,7 @@ class CoachingService:
         ancestors: list[PromptNode],
         user_message: str,
         prior_messages: list,
+        current_image_path: Path | None,
     ) -> str:
         parts: list[str] = []
 
@@ -58,7 +60,9 @@ class CoachingService:
             parts.append(f"## {name}\n\n{content}\n")
         parts.append("\n---\n")
 
-        # Iteration context (ancestor prompts, root-first)
+        # Iteration context (ancestor prompts, root-first).
+        # Ancestor images are represented by their cached text description
+        # to keep the context cheap — we don't pass raw pixels for history.
         non_self = [a for a in ancestors if a.id != node.id]
         if non_self:
             parts.append("# Prompt iteration history (oldest first)\n")
@@ -66,6 +70,12 @@ class CoachingService:
                 parts.append(f"**Prompt:** `{a.prompt_text}`")
                 if a.notes:
                     parts.append(f"**Notes:** {a.notes}")
+                if a.image and a.image.description:
+                    parts.append(
+                        f"**Generated image:** {a.image.description}"
+                    )
+                if a.image and a.image.feedback:
+                    parts.append(f"**Feedback on that result:** {a.image.feedback}")
                 parts.append("")
 
         # Current prompt
@@ -73,10 +83,22 @@ class CoachingService:
         if node.notes:
             parts.append(f"# User notes\n\n{node.notes}\n")
 
-        # Image feedback (text-based — CLI mode can't do vision)
+        # Current image — pass the file path and let the coach read it
+        # directly so it can see the real pixels (not just a description).
+        if current_image_path is not None:
+            parts.append(
+                "# Generated image for the current prompt\n\n"
+                f"The image produced by this prompt is at: {current_image_path}\n"
+                "Read the file so you can see it before responding.\n"
+            )
+            if node.image and node.image.description:
+                parts.append(
+                    f"Prior auto-description (for reference): {node.image.description}\n"
+                )
+
         if node.image and node.image.feedback:
             parts.append(
-                f"# Feedback on generated result\n\n{node.image.feedback}\n"
+                f"# Feedback on the current generated result\n\n{node.image.feedback}\n"
             )
 
         # Prior coaching conversation on this node
@@ -110,18 +132,44 @@ class CoachingService:
             )
         ]
 
-        prompt = self._build_prompt(node, ancestors, user_message, prior)
+        # Resolve the current image path (if any) so the coach can read it.
+        current_image_path: Path | None = None
+        if node.image:
+            candidate = (
+                self.settings.image_dir
+                / str(node.project_id)
+                / node.image.filename
+            )
+            if candidate.exists():
+                current_image_path = candidate
+
+        prompt = self._build_prompt(
+            node, ancestors, user_message, prior, current_image_path
+        )
+
+        # When we're handing the coach an image, it needs to use the Read
+        # tool (one extra turn) and we need to grant filesystem access to
+        # the image directory. Otherwise keep the existing single-turn
+        # behavior so coaching stays fast.
+        cli_args = [
+            "claude",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+        ]
+        if current_image_path is not None:
+            cli_args += [
+                "--max-turns", "3",
+                "--add-dir", str(current_image_path.parent),
+            ]
+        else:
+            cli_args += ["--max-turns", "1"]
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "claude",
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--include-partial-messages",
-                "--max-turns",
-                "1",
+                *cli_args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

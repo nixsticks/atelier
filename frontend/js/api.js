@@ -40,8 +40,8 @@ export const api = {
     uploadImageFromUrl: (pid, nid, url) =>
         request(`/projects/${pid}/nodes/${nid}/image/from-url`, { method: 'POST', body: JSON.stringify({ url }) }),
     getImage: (pid, nid) => request(`/projects/${pid}/nodes/${nid}/image`),
-    updateImageFeedback: (pid, nid, feedback) =>
-        request(`/projects/${pid}/nodes/${nid}/image`, { method: 'PATCH', body: JSON.stringify({ feedback }) }),
+    updateImage: (pid, nid, patch) =>
+        request(`/projects/${pid}/nodes/${nid}/image`, { method: 'PATCH', body: JSON.stringify(patch) }),
     deleteImage: (pid, nid) => request(`/projects/${pid}/nodes/${nid}/image`, { method: 'DELETE' }),
 
     // Tags

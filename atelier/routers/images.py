@@ -1,23 +1,45 @@
 import mimetypes
-import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
-
 
 
 from atelier.config import Settings
 from atelier.dependencies import get_db, get_settings
 from atelier.models import Image, PromptNode
-from atelier.schemas import ImageFeedbackUpdate, ImageResponse
+from atelier.schemas import ImageResponse, ImageUpdate
+from atelier.services.vision import describe_image
 
 router = APIRouter(prefix="/api/projects/{project_id}/nodes/{node_id}", tags=["images"])
+
+
+async def _generate_description_task(
+    session_factory: async_sessionmaker[AsyncSession],
+    image_id: int,
+    image_path: Path,
+) -> None:
+    """Background task: describe an image and save the result.
+
+    Best-effort — any failure is swallowed so upload always succeeds.
+    """
+    description = await describe_image(image_path)
+    if not description:
+        return
+    async with session_factory() as session:
+        image = await session.get(Image, image_id)
+        if image is None:
+            return
+        # Don't overwrite a description the user already edited.
+        if image.description:
+            return
+        image.description = description
+        await session.commit()
 
 
 def _image_dir(settings: Settings, project_id: int) -> Path:
@@ -77,6 +99,8 @@ async def upload_image(
     project_id: int,
     node_id: int,
     file: UploadFile,
+    background_tasks: BackgroundTasks,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -97,11 +121,23 @@ async def upload_image(
         data = await file.read()
         if not data:
             raise HTTPException(400, "Empty file")
-        return await _save_image(db, settings, node, project_id, node_id, data, ext)
+        image = await _save_image(db, settings, node, project_id, node_id, data, ext)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"Upload failed: {type(e).__name__}: {e}")
+
+    # Clear any stale description from a previously-uploaded image on this node,
+    # then schedule auto-description in the background.
+    image.description = None
+    await db.flush()
+    background_tasks.add_task(
+        _generate_description_task,
+        request.app.state.session_factory,
+        image.id,
+        _image_dir(settings, project_id) / image.filename,
+    )
+    return image
 
 
 class ImageFromUrl(BaseModel):
@@ -113,6 +149,8 @@ async def upload_image_from_url(
     project_id: int,
     node_id: int,
     body: ImageFromUrl,
+    background_tasks: BackgroundTasks,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -135,7 +173,16 @@ async def upload_image_from_url(
     if ext == ".jpe":
         ext = ".jpg"
 
-    return await _save_image(db, settings, node, project_id, node_id, resp.content, ext)
+    image = await _save_image(db, settings, node, project_id, node_id, resp.content, ext)
+    image.description = None
+    await db.flush()
+    background_tasks.add_task(
+        _generate_description_task,
+        request.app.state.session_factory,
+        image.id,
+        _image_dir(settings, project_id) / image.filename,
+    )
+    return image
 
 
 @router.get("/image", response_model=ImageResponse)
@@ -149,16 +196,19 @@ async def get_image(
 
 
 @router.patch("/image", response_model=ImageResponse)
-async def update_image_feedback(
+async def update_image(
     project_id: int,
     node_id: int,
-    body: ImageFeedbackUpdate,
+    body: ImageUpdate,
     db: AsyncSession = Depends(get_db),
 ):
     node = await _get_node(db, project_id, node_id)
     if not node.image:
         raise HTTPException(404, "No image for this node")
-    node.image.feedback = body.feedback
+    if body.feedback is not None:
+        node.image.feedback = body.feedback
+    if body.description is not None:
+        node.image.description = body.description
     await db.flush()
     await db.refresh(node.image)
     return node.image

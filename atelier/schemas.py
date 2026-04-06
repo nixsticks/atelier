@@ -25,12 +25,14 @@ class ImageResponse(BaseModel):
     prompt_node_id: int
     filename: str
     feedback: str | None
+    description: str | None
     created_at: datetime
     tags: list[TagResponse] = []
 
 
-class ImageFeedbackUpdate(BaseModel):
-    feedback: str
+class ImageUpdate(BaseModel):
+    feedback: str | None = None
+    description: str | None = None
 
 
 # --- Prompt Nodes ---

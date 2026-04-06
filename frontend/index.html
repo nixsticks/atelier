@@ -22,6 +22,7 @@
                     <select id="project-select">
                         <option value="">Select project...</option>
                     </select>
+                    <button id="delete-project-btn" class="btn-icon btn-danger" title="Delete current project" disabled>&times;</button>
                 </div>
             </section>
 
@@ -45,6 +46,7 @@
                     <h2>Prompt</h2>
                     <div class="panel-actions">
                         <button id="copy-prompt-btn" class="btn-sm" title="Copy prompt to clipboard">Copy</button>
+                        <button id="delete-node-btn" class="btn-sm btn-danger" title="Delete this node and all children">Delete</button>
                         <button id="fork-btn" class="btn-sm" title="Fork from this node">Fork</button>
                         <button id="iterate-btn" class="btn-sm btn-primary" title="Create child refinement">Iterate</button>
                     </div>
@@ -74,9 +76,14 @@
                     <p id="dropzone-label">Drop, paste, or click to upload</p>
                     <input id="image-input" type="file" accept="image/*" hidden>
                 </div>
+                <label class="field-label" for="image-description">
+                    Auto-description <span class="field-hint">(what the coach sees for ancestor nodes)</span>
+                </label>
+                <textarea id="image-description" placeholder="Generating description..." rows="4"></textarea>
+                <label class="field-label" for="image-feedback">Your feedback</label>
                 <textarea id="image-feedback" placeholder="What do you like? What needs to change?" rows="2"></textarea>
                 <div class="editor-footer">
-                    <button id="save-feedback-btn" class="btn-sm">Save feedback</button>
+                    <button id="save-image-btn" class="btn-sm">Save</button>
                     <button id="delete-image-btn" class="btn-sm btn-danger" hidden>Remove image</button>
                 </div>
             </div>
@@ -108,12 +115,35 @@
         </form>
     </dialog>
 
+    <dialog id="confirm-delete-dialog">
+        <form method="dialog">
+            <h3 id="confirm-delete-title">Delete?</h3>
+            <p id="confirm-delete-message" class="confirm-message"></p>
+            <p class="confirm-instructions">
+                Type <code id="confirm-delete-expected"></code> to confirm:
+            </p>
+            <input id="confirm-delete-input" type="text" autocomplete="off" spellcheck="false">
+            <div class="dialog-actions">
+                <button type="button" class="btn-sm" id="confirm-delete-cancel">Cancel</button>
+                <button type="button" class="btn-sm btn-danger-solid" id="confirm-delete-confirm" disabled>Delete</button>
+            </div>
+        </form>
+    </dialog>
+
     <dialog id="iterate-dialog">
         <form method="dialog">
             <h3 id="iterate-dialog-title">Iterate</h3>
             <input id="iterate-name" type="text" placeholder="Name (optional)" maxlength="255">
             <textarea id="iterate-prompt-text" placeholder="Refined prompt..." rows="4"></textarea>
             <textarea id="iterate-notes" placeholder="Notes on what changed..." rows="2"></textarea>
+            <div id="root-image-section" hidden>
+                <div id="root-image-dropzone" class="dropzone">
+                    <img id="root-image-preview" hidden>
+                    <p id="root-image-label">Drop, paste, or click to attach an image (optional)</p>
+                    <input id="root-image-input" type="file" accept="image/*" hidden>
+                </div>
+                <button type="button" id="root-image-clear" class="btn-sm" hidden>Remove image</button>
+            </div>
             <div class="dialog-actions">
                 <button type="button" class="btn-sm" onclick="this.closest('dialog').close()">Cancel</button>
                 <button type="submit" class="btn-sm btn-primary">Create</button>

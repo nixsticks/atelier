@@ -1,8 +1,11 @@
+import shutil
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from atelier.dependencies import get_db
+from atelier.config import Settings
+from atelier.dependencies import get_db, get_settings
 from atelier.models import Project
 from atelier.schemas import ProjectCreate, ProjectResponse, ProjectUpdate
 
@@ -49,8 +52,19 @@ async def update_project(
 
 
 @router.delete("/{project_id}", status_code=204)
-async def delete_project(project_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_project(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
     await db.delete(project)
+    await db.flush()
+
+    # Wipe the on-disk image directory for this project. Cascade delete
+    # already removed the DB rows; this just keeps the filesystem in sync.
+    project_image_dir = settings.image_dir / str(project_id)
+    if project_image_dir.exists():
+        shutil.rmtree(project_image_dir, ignore_errors=True)
