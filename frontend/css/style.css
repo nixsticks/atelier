@@ -246,6 +246,26 @@ textarea:focus {
 
 textarea::placeholder { color: var(--text-muted); }
 
+#prompt-name, #iterate-name {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg-raised);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-family: var(--font-body);
+    font-size: 13px;
+    margin-bottom: 8px;
+    transition: border-color 0.15s;
+}
+
+#prompt-name:focus, #iterate-name:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+#prompt-name::placeholder, #iterate-name::placeholder { color: var(--text-muted); }
+
 #prompt-notes, #image-feedback {
     font-family: var(--font-body);
     font-size: 13px;

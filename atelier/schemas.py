@@ -38,11 +38,13 @@ class ImageFeedbackUpdate(BaseModel):
 
 class PromptNodeCreate(BaseModel):
     parent_id: int | None = None
+    name: str | None = None
     prompt_text: str
     notes: str | None = None
 
 
 class PromptNodeUpdate(BaseModel):
+    name: str | None = None
     prompt_text: str | None = None
     notes: str | None = None
     is_starred: bool | None = None
@@ -53,6 +55,7 @@ class PromptNodeResponse(BaseModel):
     id: int
     project_id: int
     parent_id: int | None
+    name: str | None
     prompt_text: str
     notes: str | None
     is_starred: bool
@@ -64,6 +67,7 @@ class PromptNodeResponse(BaseModel):
 class PromptTreeNode(BaseModel):
     id: int
     parent_id: int | None
+    name: str | None
     prompt_text: str
     notes: str | None
     is_starred: bool

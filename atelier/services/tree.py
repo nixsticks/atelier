@@ -28,6 +28,7 @@ async def get_project_tree(
         return PromptTreeNode(
             id=node.id,
             parent_id=node.parent_id,
+            name=node.name,
             prompt_text=node.prompt_text,
             notes=node.notes,
             is_starred=node.is_starred,

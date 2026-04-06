@@ -172,11 +172,11 @@ function renderTreeNode(node, isRoot = false) {
         item.appendChild(dot);
     }
 
-    // Prompt text
+    // Prompt text — show name if set, otherwise truncated prompt
     const text = document.createElement('span');
     text.className = 'node-text';
-    text.textContent = node.prompt_text;
-    text.title = node.prompt_text;
+    text.textContent = node.name || (node.prompt_text.length > 60 ? node.prompt_text.slice(0, 60) + '…' : node.prompt_text);
+    text.title = node.name ? `${node.name}\n${node.prompt_text}` : node.prompt_text;
     item.appendChild(text);
 
     item.addEventListener('click', () => selectNodeById(node.id));
@@ -225,6 +225,7 @@ function selectNode(node, skipRoute = false) {
     imagePanel.hidden = false;
 
     // Populate editor
+    $('#prompt-name').value = node.name || '';
     $('#prompt-text').value = node.prompt_text;
     $('#prompt-notes').value = node.notes || '';
     $('#star-checkbox').checked = node.is_starred;
@@ -253,6 +254,7 @@ function selectNode(node, skipRoute = false) {
 $('#save-prompt-btn').addEventListener('click', async () => {
     if (!state.currentNode) return;
     const data = {
+        name: $('#prompt-name').value || null,
         prompt_text: $('#prompt-text').value,
         notes: $('#prompt-notes').value || null,
         is_starred: $('#star-checkbox').checked,
@@ -270,6 +272,7 @@ $('#copy-prompt-btn').addEventListener('click', () => {
 $('#iterate-btn').addEventListener('click', () => {
     if (!state.currentNode) return;
     $('#iterate-dialog-title').textContent = 'Iterate';
+    $('#iterate-name').value = '';
     $('#iterate-prompt-text').value = state.currentNode.prompt_text;
     $('#iterate-notes').value = '';
     $('#iterate-dialog').showModal();
@@ -279,6 +282,7 @@ $('#iterate-btn').addEventListener('click', () => {
 $('#fork-btn').addEventListener('click', () => {
     if (!state.currentNode) return;
     $('#iterate-dialog-title').textContent = 'Fork';
+    $('#iterate-name').value = '';
     $('#iterate-prompt-text').value = state.currentNode.prompt_text;
     $('#iterate-notes').value = '';
     $('#iterate-dialog').showModal();
@@ -289,6 +293,7 @@ $('#iterate-dialog').querySelector('form').addEventListener('submit', async (e) 
     if (!state.currentNode) return;
     const data = {
         parent_id: state.currentNode.id,
+        name: $('#iterate-name').value || null,
         prompt_text: $('#iterate-prompt-text').value,
         notes: $('#iterate-notes').value || null,
     };
@@ -300,6 +305,7 @@ $('#iterate-dialog').querySelector('form').addEventListener('submit', async (e) 
 $('#new-root-btn').addEventListener('click', () => {
     if (!state.currentProject) return;
     $('#iterate-dialog-title').textContent = 'New root prompt';
+    $('#iterate-name').value = '';
     $('#iterate-prompt-text').value = '';
     $('#iterate-notes').value = '';
     $('#iterate-dialog').showModal();
@@ -312,6 +318,7 @@ origSubmit.addEventListener('submit', async function rootHandler(e) {
     if ($('#iterate-dialog').dataset.mode !== 'root') return;
     e.preventDefault();
     const data = {
+        name: $('#iterate-name').value || null,
         prompt_text: $('#iterate-prompt-text').value,
         notes: $('#iterate-notes').value || null,
     };

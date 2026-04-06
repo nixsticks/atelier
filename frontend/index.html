@@ -49,6 +49,7 @@
                         <button id="iterate-btn" class="btn-sm btn-primary" title="Create child refinement">Iterate</button>
                     </div>
                 </div>
+                <input id="prompt-name" type="text" placeholder="Name (optional)" maxlength="255">
                 <textarea id="prompt-text" placeholder="Your Midjourney prompt..." rows="4"></textarea>
                 <textarea id="prompt-notes" placeholder="Notes — what you're going for, what to change..." rows="2"></textarea>
                 <div id="node-tags" class="tag-area">
@@ -110,6 +111,7 @@
     <dialog id="iterate-dialog">
         <form method="dialog">
             <h3 id="iterate-dialog-title">Iterate</h3>
+            <input id="iterate-name" type="text" placeholder="Name (optional)" maxlength="255">
             <textarea id="iterate-prompt-text" placeholder="Refined prompt..." rows="4"></textarea>
             <textarea id="iterate-notes" placeholder="Notes on what changed..." rows="2"></textarea>
             <div class="dialog-actions">

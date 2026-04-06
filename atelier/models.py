@@ -67,6 +67,7 @@ class PromptNode(Base):
     parent_id: Mapped[int | None] = mapped_column(
         ForeignKey("prompt_node.id", ondelete="CASCADE"), default=None
     )
+    name: Mapped[str | None] = mapped_column(String(255), default=None)
     prompt_text: Mapped[str] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text, default=None)
     is_starred: Mapped[bool] = mapped_column(Boolean, default=False)

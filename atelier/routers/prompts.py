@@ -59,6 +59,7 @@ async def create_node(
     node = PromptNode(
         project_id=project_id,
         parent_id=body.parent_id,
+        name=body.name,
         prompt_text=body.prompt_text,
         notes=body.notes,
     )

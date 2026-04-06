@@ -30,6 +30,13 @@ async def lifespan(app: FastAPI):
     engine = create_engine(settings.database_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Migrate: add name column to prompt_node if missing
+        from sqlalchemy import text, inspect as sa_inspect
+        def _migrate(connection):
+            columns = [c["name"] for c in sa_inspect(connection).get_columns("prompt_node")]
+            if "name" not in columns:
+                connection.execute(text("ALTER TABLE prompt_node ADD COLUMN name VARCHAR(255)"))
+        await conn.run_sync(_migrate)
 
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
