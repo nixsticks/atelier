@@ -10,6 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+
+
 from atelier.config import Settings
 from atelier.dependencies import get_db, get_settings
 from atelier.models import Image, PromptNode
@@ -54,13 +56,20 @@ async def _save_image(
         if old_path.exists() and old_path != dest:
             old_path.unlink()
         node.image.filename = filename
+        await db.flush()
+        return node.image
     else:
         image = Image(prompt_node_id=node_id, filename=filename)
         db.add(image)
-
-    await db.flush()
-    refreshed = await _get_node(db, project_id, node_id)
-    return refreshed.image
+        await db.flush()
+        await db.refresh(image)
+        # Eagerly load tags to prevent lazy-load crash in async serialization
+        result = await db.execute(
+            select(Image)
+            .where(Image.id == image.id)
+            .options(selectinload(Image.tags))
+        )
+        return result.scalar_one()
 
 
 @router.post("/image", response_model=ImageResponse, status_code=201)
@@ -72,9 +81,27 @@ async def upload_image(
     settings: Settings = Depends(get_settings),
 ):
     node = await _get_node(db, project_id, node_id)
-    ext = Path(file.filename).suffix if file.filename else ".png"
-    data = await file.read()
-    return await _save_image(db, settings, node, project_id, node_id, data, ext)
+
+    # Determine extension: try filename, then content_type, fallback to .png
+    ext = ""
+    if file.filename:
+        ext = Path(file.filename).suffix
+    if not ext and file.content_type:
+        ext = mimetypes.guess_extension(file.content_type) or ""
+        if ext == ".jpe":
+            ext = ".jpg"
+    if not ext:
+        ext = ".png"
+
+    try:
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "Empty file")
+        return await _save_image(db, settings, node, project_id, node_id, data, ext)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Upload failed: {type(e).__name__}: {e}")
 
 
 class ImageFromUrl(BaseModel):
@@ -91,10 +118,17 @@ async def upload_image_from_url(
 ):
     node = await _get_node(db, project_id, node_id)
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-        resp = await client.get(body.url)
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=30,
+        headers={"User-Agent": "Atelier/0.1"},
+    ) as client:
+        try:
+            resp = await client.get(body.url)
+        except httpx.RequestError as e:
+            raise HTTPException(400, f"Failed to fetch image: {e}")
         if resp.status_code != 200:
-            raise HTTPException(400, f"Failed to fetch image (HTTP {resp.status_code})")
+            raise HTTPException(400, f"Failed to fetch image (HTTP {resp.status_code} from {urlparse(body.url).netloc})")
 
     content_type = resp.headers.get("content-type", "")
     ext = mimetypes.guess_extension(content_type.split(";")[0]) or ".png"

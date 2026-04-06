@@ -4,7 +4,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from atelier.models import PromptNode
+from atelier.models import Image, PromptNode
 from atelier.schemas import PromptTreeNode, TagResponse
 
 
@@ -15,7 +15,7 @@ async def get_project_tree(
     result = await db.execute(
         select(PromptNode)
         .where(PromptNode.project_id == project_id)
-        .options(selectinload(PromptNode.image), selectinload(PromptNode.tags))
+        .options(selectinload(PromptNode.image).selectinload(Image.tags), selectinload(PromptNode.tags))
         .order_by(PromptNode.created_at)
     )
     nodes = result.scalars().all()
@@ -65,7 +65,7 @@ async def get_ancestors(
         select(PromptNode)
         .where(PromptNode.id.in_(ancestor_ids))
         .options(
-            selectinload(PromptNode.image),
+            selectinload(PromptNode.image).selectinload(Image.tags),
             selectinload(PromptNode.tags),
         )
     )

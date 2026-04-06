@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from atelier.dependencies import get_db
-from atelier.models import Project, PromptNode
+from atelier.models import Image, Project, PromptNode
 from atelier.schemas import (
     PromptNodeCreate,
     PromptNodeResponse,
@@ -23,7 +23,7 @@ async def _get_node(
         select(PromptNode)
         .where(PromptNode.id == node_id, PromptNode.project_id == project_id)
         .options(
-            selectinload(PromptNode.image),
+            selectinload(PromptNode.image).selectinload(Image.tags),
             selectinload(PromptNode.tags),
         )
     )

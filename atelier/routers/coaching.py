@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from atelier.config import Settings
 from atelier.dependencies import get_db, get_knowledge, get_settings
-from atelier.models import CoachingMessage, PromptNode
+from atelier.models import CoachingMessage, Image, PromptNode
 from atelier.schemas import CoachingMessageResponse, CoachingRequest
 from atelier.services.coaching import CoachingService
 
@@ -23,7 +23,7 @@ async def _get_node(db: AsyncSession, project_id: int, node_id: int) -> PromptNo
         select(PromptNode)
         .where(PromptNode.id == node_id, PromptNode.project_id == project_id)
         .options(
-            selectinload(PromptNode.image),
+            selectinload(PromptNode.image).selectinload(Image.tags),
             selectinload(PromptNode.coaching_messages),
         )
     )

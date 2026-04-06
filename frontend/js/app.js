@@ -360,22 +360,77 @@ dropzone.addEventListener('drop', async (e) => {
     e.preventDefault();
     dropzone.classList.remove('dragover');
 
-    // 1. Local file drag
+    // 1. Local file or browser-provided image blob
     if (e.dataTransfer.files.length) {
         handleImageUpload(e.dataTransfer.files[0]);
         return;
     }
 
-    // 2. Image URL drag (e.g. from Discord, browser)
+    // 2. Check dataTransfer.items for inline image data
+    for (const item of e.dataTransfer.items || []) {
+        if (item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (file) { handleImageUpload(file); return; }
+        }
+    }
+
+    // 3. Image URL from HTML or URI drag data
     const html = e.dataTransfer.getData('text/html');
     const uri = e.dataTransfer.getData('text/uri-list');
-    const url = extractImageUrl(html) || extractImageUrl(uri);
+    const plain = e.dataTransfer.getData('text/plain');
+    const url = extractImageUrl(html) || extractImageUrl(uri) || extractImageUrl(plain);
     if (url) {
         handleImageUrl(url);
         return;
     }
 
-    toast('No image found in drop');
+    // Debug: show what we received so user can report
+    const types = [...(e.dataTransfer.types || [])];
+    console.log('Drop data types:', types);
+    types.forEach(t => console.log(`  ${t}:`, e.dataTransfer.getData(t)?.slice(0, 200)));
+    toast('No image found — try copy/paste instead (Cmd+V)');
+});
+
+// Paste support: copy image in Discord → Cmd+V here
+document.addEventListener('paste', (e) => {
+    if (!state.currentNode) return;
+    const cb = e.clipboardData;
+    if (!cb) return;
+
+    // 1. Raw image data (right-click → Copy Image on some platforms)
+    for (const item of cb.items || []) {
+        if (item.type.startsWith('image/')) {
+            e.preventDefault();
+            const file = item.getAsFile();
+            if (file) handleImageUpload(file);
+            return;
+        }
+    }
+
+    // 2. HTML with <img> tag or URL pointing to an image
+    const html = cb.getData('text/html');
+    const plain = cb.getData('text/plain');
+    const url = extractImageUrl(html) || extractImageUrl(plain);
+    if (url) {
+        // Don't hijack paste if user is typing in a text field and it's not an image URL
+        const active = document.activeElement?.tagName;
+        if (active === 'TEXTAREA' || active === 'INPUT') {
+            // Only hijack if it really looks like an image URL
+            if (!/\.(png|jpe?g|gif|webp)/i.test(url) &&
+                !url.includes('cdn.discordapp.com') &&
+                !url.includes('media.discordapp.net')) {
+                return;
+            }
+        }
+        e.preventDefault();
+        handleImageUrl(url);
+        return;
+    }
+
+    // Debug: log what's in the clipboard
+    const types = [...(cb.types || [])];
+    console.log('Paste data types:', types);
+    types.forEach(t => console.log(`  ${t}:`, cb.getData(t)?.slice(0, 300)));
 });
 imageInput.addEventListener('change', () => {
     if (imageInput.files.length) handleImageUpload(imageInput.files[0]);
@@ -383,13 +438,19 @@ imageInput.addEventListener('change', () => {
 
 function extractImageUrl(text) {
     if (!text) return null;
+    // Decode HTML entities (Discord drag data uses &amp; etc.)
+    const decode = (s) => {
+        const el = document.createElement('textarea');
+        el.innerHTML = s;
+        return el.value;
+    };
     // Try <img src="...">
     const imgMatch = text.match(/<img[^>]+src=["']([^"']+)["']/i);
-    if (imgMatch) return imgMatch[1];
+    if (imgMatch) return decode(imgMatch[1]);
     // Try bare URL ending in image extension or from known CDNs
     const urlMatch = text.match(/(https?:\/\/[^\s<>"']+)/i);
     if (urlMatch) {
-        const u = urlMatch[1];
+        const u = decode(urlMatch[1]);
         if (/\.(png|jpe?g|gif|webp)/i.test(u) ||
             u.includes('cdn.discordapp.com') ||
             u.includes('media.discordapp.net')) {
@@ -417,7 +478,7 @@ async function handleImageUrl(url) {
         toast('Image uploaded');
     } catch (err) {
         toast(`Failed to fetch image: ${err.message}`);
-        label.textContent = 'Drop image here or click to upload';
+        label.textContent = 'Drop, paste, or click to upload';
     }
 }
 
