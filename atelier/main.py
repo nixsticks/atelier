@@ -10,7 +10,7 @@ from starlette.types import Scope
 from atelier.config import Settings
 from atelier.database import create_engine, create_session_factory
 from atelier.models import Base
-from atelier.routers import coaching, images, projects, prompts, tags
+from atelier.routers import coaching, generation, images, projects, prompts, tags
 from atelier.services.claude_cli import find_claude_cli
 
 
@@ -77,8 +77,34 @@ async def lifespan(app: FastAPI):
             "and on PATH (or in ~/.local/bin)."
         )
 
+    # Midjourney Discord client (optional, off by default).
+    app.state.midjourney = None
+    if settings.mj_enabled:
+        if not (settings.mj_discord_token and settings.mj_channel_id):
+            print(
+                "[atelier] WARNING: ATELIER_MJ_ENABLED=true but "
+                "ATELIER_MJ_DISCORD_TOKEN / ATELIER_MJ_CHANNEL_ID are unset; "
+                "Midjourney generation disabled."
+            )
+        else:
+            try:
+                from atelier.services.midjourney import MidjourneyService
+                mj = MidjourneyService(
+                    token=settings.mj_discord_token,
+                    channel_id=settings.mj_channel_id,
+                    guild_id=settings.mj_guild_id,
+                    timeout=settings.mj_timeout_seconds,
+                )
+                await mj.start()
+                app.state.midjourney = mj
+                print("[atelier] Midjourney Discord client connected")
+            except Exception as e:
+                print(f"[atelier] WARNING: Midjourney startup failed: {e}")
+
     yield
 
+    if app.state.midjourney is not None:
+        await app.state.midjourney.stop()
     await engine.dispose()
 
 
@@ -100,16 +126,20 @@ def create_app() -> FastAPI:
     app.include_router(images.router)
     app.include_router(tags.router)
     app.include_router(coaching.router)
+    app.include_router(generation.router)
 
     frontend_dir = settings.project_root / "frontend"
     if frontend_dir.exists():
         app.mount("/static", NoCacheStaticFiles(directory=str(frontend_dir)), name="static")
 
-    # Ensure image dir exists before mounting
+    # Ensure image dir exists before mounting.
+    # Use NoCacheStaticFiles so a re-uploaded image with the same filename
+    # (e.g. after a crop or regeneration) refreshes immediately instead of
+    # being served from the browser cache.
     settings.image_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         "/images",
-        StaticFiles(directory=str(settings.image_dir)),
+        NoCacheStaticFiles(directory=str(settings.image_dir)),
         name="images",
     )
 

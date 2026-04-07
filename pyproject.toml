@@ -20,6 +20,9 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",
 ]
+mj = [
+    "discord.py-self>=2.1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

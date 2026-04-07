@@ -329,10 +329,16 @@ function selectNode(node, skipRoute = false) {
     // Populate image
     if (node.image) {
         const img = $('#image-preview');
-        img.src = `/images/${node.project_id}/${node.image.filename}`;
+        // Force the browser to drop any cached bitmap for this element by
+        // clearing src first, then setting the new (cache-busted) URL.
+        // Belt-and-suspenders: the /images mount also sends no-cache headers.
+        img.src = '';
+        img.src = `/images/${node.project_id}/${node.image.filename}?t=${Date.now()}`;
         img.hidden = false;
+        $('#image-dropzone').classList.add('has-image');
         $('#dropzone-label').hidden = true;
         $('#delete-image-btn').hidden = false;
+        $('#replace-image-btn').hidden = false;
         $('#image-feedback').value = node.image.feedback || '';
         $('#image-description').value = node.image.description || '';
         $('#image-description').placeholder = node.image.description
@@ -344,8 +350,10 @@ function selectNode(node, skipRoute = false) {
         maybePollDescription(node);
     } else {
         $('#image-preview').hidden = true;
+        $('#image-dropzone').classList.remove('has-image');
         $('#dropzone-label').hidden = false;
         $('#delete-image-btn').hidden = true;
+        $('#replace-image-btn').hidden = true;
         $('#image-feedback').value = '';
         $('#image-description').value = '';
         $('#image-description').placeholder = '';
@@ -610,7 +618,23 @@ $('#node-tag-input').addEventListener('keydown', async (e) => {
 const dropzone = $('#image-dropzone');
 const imageInput = $('#image-input');
 
-dropzone.addEventListener('click', () => imageInput.click());
+// Click behavior depends on whether the dropzone has an image yet:
+//  - empty: click anywhere → file picker (the default upload affordance)
+//  - filled: click → lightbox (magnify + quadrant picker). Replace via
+//    the explicit Replace button, or via drag/drop/paste as before.
+dropzone.addEventListener('click', () => {
+    const img = $('#image-preview');
+    if (!img.hidden && img.src) {
+        openLightbox(img.src);
+    } else {
+        imageInput.click();
+    }
+});
+
+$('#replace-image-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    imageInput.click();
+});
 dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
 dropzone.addEventListener('drop', async (e) => {
@@ -837,6 +861,303 @@ $('#regen-description-btn').addEventListener('click', async () => {
         btn.disabled = false;
     }
 });
+
+// ===== Lightbox (pre-split quadrant picker + whole view) =====
+// The lightbox pre-splits a 2x2 MJ grid into 4 thumbs laid out in a
+// row with visible gaps. Click any combination to pick. Save composes
+// the picked quadrants into a horizontal strip in U1→U4 order and
+// uploads it as the current node's new image. The "View whole" toggle
+// shows the original at full size for non-grid sources.
+const lightbox = $('#lightbox');
+const lightboxImg = $('#lightbox-img');
+const lightboxStrip = $('#lightbox-strip');
+const lightboxWhole = $('#lightbox-whole');
+const lightboxThumbs = document.querySelectorAll('.quadrant-thumb');
+const selectedQuadrants = new Set();
+let lightboxSrc = '';
+
+function openLightbox(src) {
+    lightboxSrc = src;
+    // Set background-image on each thumb so the browser does the slicing
+    // for us via background-position (no canvas needed for display).
+    lightboxThumbs.forEach(t => {
+        t.style.backgroundImage = `url('${src}')`;
+        t.classList.remove('selected');
+    });
+    lightboxImg.src = src;
+    selectedQuadrants.clear();
+    showStripView();
+    updateLightboxControls();
+    lightbox.hidden = false;
+    document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+    lightbox.hidden = true;
+    lightboxThumbs.forEach(t => { t.style.backgroundImage = ''; });
+    lightboxImg.src = '';
+    lightboxSrc = '';
+    selectedQuadrants.clear();
+    document.body.style.overflow = '';
+}
+
+function showStripView() {
+    lightboxStrip.hidden = false;
+    lightboxWhole.hidden = true;
+    $('#lightbox-toggle').textContent = 'View whole';
+}
+
+function showWholeView() {
+    lightboxStrip.hidden = true;
+    lightboxWhole.hidden = false;
+    $('#lightbox-toggle').textContent = 'Show quadrants';
+}
+
+function updateLightboxControls() {
+    const hasSelection = selectedQuadrants.size > 0;
+    $('#lightbox-save').hidden = !hasSelection;
+    $('#lightbox-clear').hidden = !hasSelection;
+    if (!hasSelection) {
+        $('#lightbox-hint').textContent = 'Click a quadrant to pick. Esc to close.';
+    } else {
+        $('#lightbox-hint').textContent =
+            `${selectedQuadrants.size} selected — saved in U1\u2192U4 order`;
+    }
+}
+
+$('#lightbox-toggle').addEventListener('click', () => {
+    if (lightboxStrip.hidden) showStripView();
+    else showWholeView();
+});
+
+lightboxThumbs.forEach(t => {
+    t.addEventListener('click', () => {
+        const idx = parseInt(t.dataset.q, 10);
+        if (selectedQuadrants.has(idx)) {
+            selectedQuadrants.delete(idx);
+            t.classList.remove('selected');
+        } else {
+            selectedQuadrants.add(idx);
+            t.classList.add('selected');
+        }
+        updateLightboxControls();
+    });
+});
+
+$('#lightbox-clear').addEventListener('click', () => {
+    selectedQuadrants.clear();
+    lightboxThumbs.forEach(t => t.classList.remove('selected'));
+    updateLightboxControls();
+});
+
+$('#lightbox-close').addEventListener('click', closeLightbox);
+lightbox.addEventListener('click', (e) => {
+    if (e.target === lightbox) closeLightbox();
+});
+document.addEventListener('keydown', (e) => {
+    if (lightbox.hidden) return;
+    if (e.key === 'Escape') closeLightbox();
+});
+
+// Quadrant index → source rect within the original 2x2 grid image:
+//   0 = U1 (top-left)     1 = U2 (top-right)
+//   2 = U3 (bottom-left)  3 = U4 (bottom-right)
+function quadrantRect(idx, w, h) {
+    const col = idx % 2;
+    const row = Math.floor(idx / 2);
+    return { x: col * w / 2, y: row * h / 2, w: w / 2, h: h / 2 };
+}
+
+function blobFromCanvas(canvas) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(
+            blob => blob ? resolve(blob) : reject(new Error('canvas.toBlob returned null')),
+            'image/png',
+        );
+    });
+}
+
+async function loadNaturalImage(src) {
+    return new Promise((resolve, reject) => {
+        const im = new Image();
+        im.crossOrigin = 'anonymous';
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = src;
+    });
+}
+
+// Compose the selected quadrants into a single horizontal strip in
+// U1→U4 order. Output dimensions are (N * quadrant_width) x quadrant_height.
+async function buildSelectionStrip() {
+    const src = await loadNaturalImage(lightboxSrc);
+    const qw = src.naturalWidth / 2;
+    const qh = src.naturalHeight / 2;
+    const indices = [...selectedQuadrants].sort((a, b) => a - b);
+    const n = indices.length;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = n * qw;
+    canvas.height = qh;
+    const ctx = canvas.getContext('2d');
+
+    indices.forEach((idx, i) => {
+        const r = quadrantRect(idx, src.naturalWidth, src.naturalHeight);
+        ctx.drawImage(src, r.x, r.y, r.w, r.h, i * qw, 0, qw, qh);
+    });
+
+    return blobFromCanvas(canvas);
+}
+
+$('#lightbox-save').addEventListener('click', async () => {
+    if (!state.currentNode || selectedQuadrants.size === 0) return;
+
+    const saveBtn = $('#lightbox-save');
+    const original = saveBtn.textContent;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+    try {
+        const blob = await buildSelectionStrip();
+        const file = new File([blob], `${state.currentNode.id}.png`, { type: 'image/png' });
+        await api.uploadImage(state.currentProject.id, state.currentNode.id, file);
+        closeLightbox();
+        await refreshNodeAndTree();
+        toast('Selection saved');
+    } catch (err) {
+        toast(`Save failed: ${err.message}`);
+        saveBtn.disabled = false;
+        saveBtn.textContent = original;
+    }
+});
+
+// ===== Midjourney generation =====
+// Streams /generate SSE events and updates the status pill + image area
+// in place. Captures the node id at submit time so navigating away
+// mid-generation doesn't smear updates onto the wrong node.
+let generationInFlight = false;
+
+function setGenerationStatus({ text, progress = null, error = false } = {}) {
+    const el = $('#generation-status');
+    if (!text) { el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+    el.classList.toggle('error', !!error);
+    const bar = (progress !== null && !error)
+        ? `<div class="gen-bar"><div class="gen-bar-fill" style="width:${progress}%"></div></div>`
+        : '';
+    el.innerHTML = `<span class="gen-dot"></span><span>${text}</span>${bar}`;
+}
+
+function clearGenerationStatusSoon() {
+    setTimeout(() => {
+        if (!generationInFlight) setGenerationStatus({});
+    }, 2500);
+}
+
+async function runGeneration() {
+    if (generationInFlight) return;
+    if (!state.currentNode) return;
+    const pid = state.currentProject.id;
+    const nid = state.currentNode.id;
+    const promptText = ($('#prompt-text').value || '').trim();
+    if (!promptText) {
+        toast('Add some prompt text first');
+        return;
+    }
+
+    const btn = $('#generate-btn');
+    generationInFlight = true;
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    setGenerationStatus({ text: 'Submitting to Midjourney...' });
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 360_000); // 6min hard cap
+
+    const cleanup = () => {
+        generationInFlight = false;
+        btn.disabled = false;
+        btn.textContent = 'Generate';
+        clearTimeout(timeout);
+    };
+
+    try {
+        const res = await api.streamGeneration(pid, nid, controller.signal);
+
+        if (res.status === 503) {
+            setGenerationStatus({
+                text: 'Midjourney is not enabled on the server',
+                error: true,
+            });
+            cleanup();
+            return;
+        }
+        if (!res.ok) {
+            const errBody = await res.text();
+            throw new Error(`Server error (${res.status}): ${errBody.slice(0, 200)}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop(); // last line may be incomplete
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const raw = line.slice(6);
+                if (raw === '[DONE]') continue;
+
+                let event;
+                try { event = JSON.parse(raw); } catch { continue; }
+
+                // Drop events if user navigated to a different node
+                const stillHere = state.currentNode && state.currentNode.id === nid;
+
+                if (event.type === 'queued') {
+                    if (stillHere) setGenerationStatus({ text: 'Queued — waiting for Midjourney...' });
+                } else if (event.type === 'progress') {
+                    if (stillHere) {
+                        const pct = event.progress ?? 0;
+                        setGenerationStatus({ text: `Generating ${pct}%`, progress: pct });
+                    }
+                } else if (event.type === 'done') {
+                    // The image is already saved server-side. Refresh the
+                    // node to pick up the new Image row + filename.
+                    const fresh = await api.getNode(pid, nid);
+                    if (stillHere) {
+                        state.currentNode = fresh;
+                        selectNode(fresh, true);
+                        setGenerationStatus({ text: 'Done', progress: 100 });
+                        clearGenerationStatusSoon();
+                        toast('Image generated');
+                    }
+                    await loadTree();
+                } else if (event.type === 'error') {
+                    if (stillHere) {
+                        setGenerationStatus({
+                            text: event.message || 'Generation failed',
+                            error: true,
+                        });
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        const msg = err.name === 'AbortError'
+            ? 'Generation timed out'
+            : err.message;
+        setGenerationStatus({ text: msg, error: true });
+    } finally {
+        cleanup();
+    }
+}
+
+$('#generate-btn').addEventListener('click', runGeneration);
 
 // ===== Coaching =====
 async function loadCoaching() {

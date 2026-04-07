@@ -62,4 +62,12 @@ export const api = {
             signal,
         });
     },
+
+    // Generation (Midjourney via Discord)
+    streamGeneration: (pid, nid, signal) => {
+        return fetch(`${BASE}/projects/${pid}/nodes/${nid}/generate`, {
+            method: 'POST',
+            signal,
+        });
+    },
 };

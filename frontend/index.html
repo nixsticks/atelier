@@ -70,7 +70,12 @@
             <div id="image-panel" class="panel" hidden>
                 <div class="panel-header">
                     <h2>Result</h2>
+                    <div class="panel-actions">
+                        <button id="replace-image-btn" class="btn-sm" title="Upload a different file" hidden>Replace</button>
+                        <button id="generate-btn" class="btn-sm btn-primary" title="Generate via Midjourney from this prompt">Generate</button>
+                    </div>
                 </div>
+                <div id="generation-status" class="generation-status" hidden></div>
                 <div id="image-dropzone" class="dropzone">
                     <img id="image-preview" hidden>
                     <p id="dropzone-label">Drop, paste, or click to upload</p>
@@ -153,6 +158,29 @@
             </div>
         </form>
     </dialog>
+
+    <!-- Lightbox: pre-splits a 2x2 grid into 4 thumbs you can pick from.
+         Toggle to view the whole image for non-grid sources. -->
+    <div id="lightbox" class="lightbox" hidden>
+        <button id="lightbox-close" class="lightbox-close" title="Close (Esc)">&times;</button>
+        <div class="lightbox-stage">
+            <div id="lightbox-strip" class="lightbox-strip">
+                <button class="quadrant-thumb" data-q="0" type="button" title="U1"><span class="quadrant-label">U1</span></button>
+                <button class="quadrant-thumb" data-q="1" type="button" title="U2"><span class="quadrant-label">U2</span></button>
+                <button class="quadrant-thumb" data-q="2" type="button" title="U3"><span class="quadrant-label">U3</span></button>
+                <button class="quadrant-thumb" data-q="3" type="button" title="U4"><span class="quadrant-label">U4</span></button>
+            </div>
+            <div id="lightbox-whole" class="lightbox-whole" hidden>
+                <img id="lightbox-img" alt="">
+            </div>
+            <div class="lightbox-bar">
+                <span id="lightbox-hint" class="lightbox-hint">Click a quadrant to pick. Esc to close.</span>
+                <button id="lightbox-toggle" class="btn-sm" type="button">View whole</button>
+                <button id="lightbox-clear" class="btn-sm" hidden>Clear</button>
+                <button id="lightbox-save" class="btn-sm btn-primary" hidden>Save selection</button>
+            </div>
+        </div>
+    </div>
 
     <script type="module" src="/static/js/app.js"></script>
 </body>
