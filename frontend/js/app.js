@@ -469,11 +469,6 @@ $('#iterate-btn').addEventListener('click', () => {
     // has been chatting with the coach — that's usually what they want
     // to iterate on, not the raw parent prompt.
     const suggested = extractCoachSuggestedPrompt();
-    console.debug('[iterate prefill]', {
-        coachMsgCount: (state.coachingMessages || []).length,
-        usingCoachSuggestion: Boolean(suggested),
-        suggestedPreview: suggested ? suggested.slice(0, 80) : null,
-    });
     $('#iterate-prompt-text').value = suggested || state.currentNode.prompt_text;
     $('#iterate-notes').value = '';
     resetRootImageUi();
@@ -1138,12 +1133,11 @@ async function runUpscale(quadrant) {
                 } else if (event.type === 'done') {
                     setGenerationStatus({ text: `U${quadrant} done`, progress: 100 });
                     clearGenerationStatusSoon();
-                    toast(`U${quadrant} upscaled`);
+                    toast(`U${quadrant} added to tree`);
+                    // Refresh the tree so the new child appears, but
+                    // stay on the parent grid so the user can keep
+                    // picking more quadrants without extra navigation.
                     await loadTree();
-                    // Child node id is on the done payload — navigate there.
-                    if (event.node_id) {
-                        await selectNodeById(event.node_id);
-                    }
                 } else if (event.type === 'error') {
                     setGenerationStatus({
                         text: event.message || `U${quadrant} upscale failed`,
