@@ -62,12 +62,41 @@ JOB_FAILURE_PHRASES = (
 EventType = Literal["queued", "progress", "done", "error"]
 
 
+def _find_component_button(message: Any, label: str) -> Any | None:
+    """Locate a button by label in a message's component rows.
+
+    Match by `.label` first (MJ uses stable "U1".."U4" / "V1".."V4"
+    labels — verified in the spike). Fall back to a `custom_id`
+    substring match so a future MJ change that drops labels but keeps
+    the `MJ::JOB::upsample::N::<uuid>` pattern still works.
+    """
+    target_upper = label.upper()
+    rows = getattr(message, "components", None) or []
+    for row in rows:
+        for child in getattr(row, "children", None) or []:
+            if (getattr(child, "label", "") or "").strip().upper() == target_upper:
+                return child
+    for row in rows:
+        for child in getattr(row, "children", None) or []:
+            cid = (getattr(child, "custom_id", "") or "").upper()
+            if cid and f"::{target_upper[1:]}::" in cid and "UPSAMPLE" in cid and target_upper.startswith("U"):
+                return child
+            if cid and f"::{target_upper[1:]}::" in cid and "VARIATION" in cid and target_upper.startswith("V"):
+                return child
+    return None
+
+
 @dataclass
 class GenerationEvent:
     type: EventType
     progress: int | None = None
     image_url: str | None = None
     message: str | None = None
+    # Populated on the terminal `done` event so callers can persist a
+    # handle for follow-up actions (pressing U1–U4 / V1–V4 on the
+    # original grid message to spawn upscales/variations).
+    discord_message_id: str | None = None
+    discord_channel_id: str | None = None
 
 
 class MidjourneyService:
@@ -104,6 +133,12 @@ class MidjourneyService:
         self._channel: Any = None
         self._imagine_cmd: Any = None
         self._active_queue: asyncio.Queue[GenerationEvent] | None = None
+        # When pressing a button on a grid message, MJ edits that grid
+        # message to reflect the new button state (pressed quadrant goes
+        # primary). Those edits share the grid's attachment + non-progress
+        # content, which would otherwise look "final" to `_dispatch`.
+        # `upscale()` sets this to the grid's id so we ignore those ghosts.
+        self._ignore_message_id: int | None = None
 
     # ---- lifecycle ----
 
@@ -190,6 +225,14 @@ class MidjourneyService:
             return
         if not self._addressed_to_us(message):
             return
+        # See note on `_ignore_message_id`: skip edits to the grid whose
+        # button we pressed, otherwise the re-styled grid looks like a
+        # finished upscale to the attachment/no-progress heuristic below.
+        if (
+            self._ignore_message_id is not None
+            and message.id == self._ignore_message_id
+        ):
+            return
 
         content = message.content or ""
 
@@ -247,7 +290,12 @@ class MidjourneyService:
             PROGRESS_PERCENT.search(content) or WAITING_MARKERS.search(content)
         ):
             await self._active_queue.put(
-                GenerationEvent(type="done", image_url=message.attachments[0].url)
+                GenerationEvent(
+                    type="done",
+                    image_url=message.attachments[0].url,
+                    discord_message_id=str(message.id),
+                    discord_channel_id=str(message.channel.id),
+                )
             )
 
     def _addressed_to_us(self, message: Any) -> bool:
@@ -264,6 +312,116 @@ class MidjourneyService:
         return False
 
     # ---- public API ----
+
+    async def upscale(
+        self,
+        grid_message_id: str,
+        grid_channel_id: str,
+        quadrant: int,
+    ) -> AsyncGenerator[GenerationEvent, None]:
+        """Press U{quadrant} on a prior grid and stream the upscale result.
+
+        The spike (`scripts/mj_button_spike.py`) confirmed that pressing
+        a component button via discord.py-self triggers a fresh MJ reply
+        containing the upscaled image. That reply's id/channel/url are
+        captured on the terminal `done` event just like `generate()`.
+
+        Errors emitted as `GenerationEvent(type="error", ...)`:
+        - service not ready / channel unresolved
+        - invalid quadrant
+        - grid message not found or no longer has the requested button
+        - button press raised
+        - timeout waiting for MJ
+        """
+        if not self._ready.is_set():
+            yield GenerationEvent(
+                type="error",
+                message="Midjourney service not ready (Discord client not connected)",
+            )
+            return
+        if self._channel is None:
+            yield GenerationEvent(
+                type="error",
+                message="Midjourney channel not available",
+            )
+            return
+        if quadrant not in (1, 2, 3, 4):
+            yield GenerationEvent(
+                type="error", message=f"quadrant must be 1..4, got {quadrant}"
+            )
+            return
+
+        async with self._lock:
+            queue: asyncio.Queue[GenerationEvent] = asyncio.Queue()
+            self._active_queue = queue
+            self._ignore_message_id = int(grid_message_id)
+            try:
+                yield GenerationEvent(type="queued")
+
+                # Resolve the grid message. Prefer the channel the grid
+                # came from (stored per-image) so this still works if the
+                # service has since been pointed at a different channel.
+                try:
+                    channel = self._client.get_channel(int(grid_channel_id))
+                    if channel is None:
+                        channel = await self._client.fetch_channel(int(grid_channel_id))
+                    grid_msg = await channel.fetch_message(int(grid_message_id))
+                except Exception as e:
+                    logger.exception(
+                        "failed to fetch MJ grid message %s", grid_message_id
+                    )
+                    yield GenerationEvent(
+                        type="error",
+                        message=f"couldn't fetch grid message {grid_message_id}: {e}",
+                    )
+                    return
+
+                button = _find_component_button(grid_msg, f"U{quadrant}")
+                if button is None:
+                    yield GenerationEvent(
+                        type="error",
+                        message=(
+                            f"U{quadrant} button not found on grid message "
+                            f"{grid_message_id} (MJ may have expired the buttons)"
+                        ),
+                    )
+                    return
+
+                try:
+                    await button.click()
+                except Exception as e:
+                    logger.exception("button.click() raised for U%d", quadrant)
+                    yield GenerationEvent(
+                        type="error",
+                        message=f"couldn't press U{quadrant}: {e}",
+                    )
+                    return
+
+                # Drain events from MJ's reply to the button press. Same
+                # state machine as `generate` — progress edits followed by
+                # a final message with an attachment and no progress
+                # markers. `_ignore_message_id` filters out edits to the
+                # grid that happen because MJ restyles the pressed button.
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            queue.get(), timeout=self._timeout
+                        )
+                    except asyncio.TimeoutError:
+                        yield GenerationEvent(
+                            type="error",
+                            message=(
+                                f"timed out after {int(self._timeout)}s "
+                                "waiting for Midjourney upscale"
+                            ),
+                        )
+                        return
+                    yield event
+                    if event.type in ("done", "error"):
+                        return
+            finally:
+                self._active_queue = None
+                self._ignore_message_id = None
 
     async def generate(self, prompt: str) -> AsyncGenerator[GenerationEvent, None]:
         """Submit a /imagine prompt and stream events back.

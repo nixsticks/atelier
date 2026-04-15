@@ -319,6 +319,10 @@ function selectNode(node, skipRoute = false) {
     editorPanel.hidden = false;
     imagePanel.hidden = false;
 
+    // Show/hide the generation status pill based on whether the
+    // in-flight generation (if any) belongs to this node.
+    renderGenerationStatus();
+
     // Populate editor
     $('#prompt-name').value = node.name || '';
     $('#prompt-text').value = node.prompt_text;
@@ -348,6 +352,9 @@ function selectNode(node, skipRoute = false) {
         $('#regen-description-btn').disabled = false;
         $('#regen-description-btn').textContent = node.image.description ? 'Regenerate' : 'Generate';
         maybePollDescription(node);
+        // Quadrant actions only apply to MJ grids — uploaded images and
+        // already-upscaled images don't have U/V buttons on Discord.
+        $('#quadrant-actions').hidden = node.image.kind !== 'grid';
     } else {
         $('#image-preview').hidden = true;
         $('#image-dropzone').classList.remove('has-image');
@@ -358,6 +365,7 @@ function selectNode(node, skipRoute = false) {
         $('#image-description').value = '';
         $('#image-description').placeholder = '';
         $('#regen-description-btn').hidden = true;
+        $('#quadrant-actions').hidden = true;
     }
 
     // Load coaching
@@ -619,9 +627,9 @@ const dropzone = $('#image-dropzone');
 const imageInput = $('#image-input');
 
 // Click behavior depends on whether the dropzone has an image yet:
-//  - empty: click anywhere → file picker (the default upload affordance)
-//  - filled: click → lightbox (magnify + quadrant picker). Replace via
-//    the explicit Replace button, or via drag/drop/paste as before.
+//  - empty: click anywhere → file picker
+//  - filled: click → enlarge in the lightbox. Replace via the explicit
+//    Replace button, or via drag/drop/paste as before.
 dropzone.addEventListener('click', () => {
     const img = $('#image-preview');
     if (!img.hidden && img.src) {
@@ -862,93 +870,21 @@ $('#regen-description-btn').addEventListener('click', async () => {
     }
 });
 
-// ===== Lightbox (pre-split quadrant picker + whole view) =====
-// The lightbox pre-splits a 2x2 MJ grid into 4 thumbs laid out in a
-// row with visible gaps. Click any combination to pick. Save composes
-// the picked quadrants into a horizontal strip in U1→U4 order and
-// uploads it as the current node's new image. The "View whole" toggle
-// shows the original at full size for non-grid sources.
+// ===== Lightbox (click an image to enlarge) =====
 const lightbox = $('#lightbox');
 const lightboxImg = $('#lightbox-img');
-const lightboxStrip = $('#lightbox-strip');
-const lightboxWhole = $('#lightbox-whole');
-const lightboxThumbs = document.querySelectorAll('.quadrant-thumb');
-const selectedQuadrants = new Set();
-let lightboxSrc = '';
 
 function openLightbox(src) {
-    lightboxSrc = src;
-    // Set background-image on each thumb so the browser does the slicing
-    // for us via background-position (no canvas needed for display).
-    lightboxThumbs.forEach(t => {
-        t.style.backgroundImage = `url('${src}')`;
-        t.classList.remove('selected');
-    });
     lightboxImg.src = src;
-    selectedQuadrants.clear();
-    showStripView();
-    updateLightboxControls();
     lightbox.hidden = false;
     document.body.style.overflow = 'hidden';
 }
 
 function closeLightbox() {
     lightbox.hidden = true;
-    lightboxThumbs.forEach(t => { t.style.backgroundImage = ''; });
     lightboxImg.src = '';
-    lightboxSrc = '';
-    selectedQuadrants.clear();
     document.body.style.overflow = '';
 }
-
-function showStripView() {
-    lightboxStrip.hidden = false;
-    lightboxWhole.hidden = true;
-    $('#lightbox-toggle').textContent = 'View whole';
-}
-
-function showWholeView() {
-    lightboxStrip.hidden = true;
-    lightboxWhole.hidden = false;
-    $('#lightbox-toggle').textContent = 'Show quadrants';
-}
-
-function updateLightboxControls() {
-    const hasSelection = selectedQuadrants.size > 0;
-    $('#lightbox-save').hidden = !hasSelection;
-    $('#lightbox-clear').hidden = !hasSelection;
-    if (!hasSelection) {
-        $('#lightbox-hint').textContent = 'Click a quadrant to pick. Esc to close.';
-    } else {
-        $('#lightbox-hint').textContent =
-            `${selectedQuadrants.size} selected — saved in U1\u2192U4 order`;
-    }
-}
-
-$('#lightbox-toggle').addEventListener('click', () => {
-    if (lightboxStrip.hidden) showStripView();
-    else showWholeView();
-});
-
-lightboxThumbs.forEach(t => {
-    t.addEventListener('click', () => {
-        const idx = parseInt(t.dataset.q, 10);
-        if (selectedQuadrants.has(idx)) {
-            selectedQuadrants.delete(idx);
-            t.classList.remove('selected');
-        } else {
-            selectedQuadrants.add(idx);
-            t.classList.add('selected');
-        }
-        updateLightboxControls();
-    });
-});
-
-$('#lightbox-clear').addEventListener('click', () => {
-    selectedQuadrants.clear();
-    lightboxThumbs.forEach(t => t.classList.remove('selected'));
-    updateLightboxControls();
-});
 
 $('#lightbox-close').addEventListener('click', closeLightbox);
 lightbox.addEventListener('click', (e) => {
@@ -959,92 +895,34 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeLightbox();
 });
 
-// Quadrant index → source rect within the original 2x2 grid image:
-//   0 = U1 (top-left)     1 = U2 (top-right)
-//   2 = U3 (bottom-left)  3 = U4 (bottom-right)
-function quadrantRect(idx, w, h) {
-    const col = idx % 2;
-    const row = Math.floor(idx / 2);
-    return { x: col * w / 2, y: row * h / 2, w: w / 2, h: h / 2 };
-}
-
-function blobFromCanvas(canvas) {
-    return new Promise((resolve, reject) => {
-        canvas.toBlob(
-            blob => blob ? resolve(blob) : reject(new Error('canvas.toBlob returned null')),
-            'image/png',
-        );
-    });
-}
-
-async function loadNaturalImage(src) {
-    return new Promise((resolve, reject) => {
-        const im = new Image();
-        im.crossOrigin = 'anonymous';
-        im.onload = () => resolve(im);
-        im.onerror = reject;
-        im.src = src;
-    });
-}
-
-// Compose the selected quadrants into a single horizontal strip in
-// U1→U4 order. Output dimensions are (N * quadrant_width) x quadrant_height.
-async function buildSelectionStrip() {
-    const src = await loadNaturalImage(lightboxSrc);
-    const qw = src.naturalWidth / 2;
-    const qh = src.naturalHeight / 2;
-    const indices = [...selectedQuadrants].sort((a, b) => a - b);
-    const n = indices.length;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = n * qw;
-    canvas.height = qh;
-    const ctx = canvas.getContext('2d');
-
-    indices.forEach((idx, i) => {
-        const r = quadrantRect(idx, src.naturalWidth, src.naturalHeight);
-        ctx.drawImage(src, r.x, r.y, r.w, r.h, i * qw, 0, qw, qh);
-    });
-
-    return blobFromCanvas(canvas);
-}
-
-$('#lightbox-save').addEventListener('click', async () => {
-    if (!state.currentNode || selectedQuadrants.size === 0) return;
-
-    const saveBtn = $('#lightbox-save');
-    const original = saveBtn.textContent;
-    saveBtn.disabled = true;
-    saveBtn.textContent = 'Saving...';
-    try {
-        const blob = await buildSelectionStrip();
-        const file = new File([blob], `${state.currentNode.id}.png`, { type: 'image/png' });
-        await api.uploadImage(state.currentProject.id, state.currentNode.id, file);
-        closeLightbox();
-        await refreshNodeAndTree();
-        toast('Selection saved');
-    } catch (err) {
-        toast(`Save failed: ${err.message}`);
-        saveBtn.disabled = false;
-        saveBtn.textContent = original;
-    }
-});
-
 // ===== Midjourney generation =====
 // Streams /generate SSE events and updates the status pill + image area
-// in place. Captures the node id at submit time so navigating away
-// mid-generation doesn't smear updates onto the wrong node.
+// in place. The status pill is scoped to the node the generation was
+// started on — switching to a different node hides it, switching back
+// restores it.
 let generationInFlight = false;
+let generatingNodeId = null;
+let lastGenerationStatus = null;
 
-function setGenerationStatus({ text, progress = null, error = false } = {}) {
+function setGenerationStatus(payload = {}) {
+    const { text } = payload;
+    lastGenerationStatus = text
+        ? { ...payload, nodeId: generatingNodeId }
+        : null;
+    renderGenerationStatus();
+}
+
+function renderGenerationStatus() {
     const el = $('#generation-status');
-    if (!text) { el.hidden = true; el.innerHTML = ''; return; }
+    const s = lastGenerationStatus;
+    const forThisNode = s && state.currentNode && state.currentNode.id === s.nodeId;
+    if (!forThisNode) { el.hidden = true; el.innerHTML = ''; return; }
     el.hidden = false;
-    el.classList.toggle('error', !!error);
-    const bar = (progress !== null && !error)
-        ? `<div class="gen-bar"><div class="gen-bar-fill" style="width:${progress}%"></div></div>`
+    el.classList.toggle('error', !!s.error);
+    const bar = (s.progress != null && !s.error)
+        ? `<div class="gen-bar"><div class="gen-bar-fill" style="width:${s.progress}%"></div></div>`
         : '';
-    el.innerHTML = `<span class="gen-dot"></span><span>${text}</span>${bar}`;
+    el.innerHTML = `<span class="gen-dot"></span><span>${s.text}</span>${bar}`;
 }
 
 function clearGenerationStatusSoon() {
@@ -1066,6 +944,7 @@ async function runGeneration() {
 
     const btn = $('#generate-btn');
     generationInFlight = true;
+    generatingNodeId = nid;
     btn.disabled = true;
     btn.textContent = 'Generating...';
     setGenerationStatus({ text: 'Submitting to Midjourney...' });
@@ -1115,16 +994,16 @@ async function runGeneration() {
                 let event;
                 try { event = JSON.parse(raw); } catch { continue; }
 
-                // Drop events if user navigated to a different node
+                // Status pill is node-scoped — setGenerationStatus only
+                // renders when the user is viewing the generating node.
+                // But selectNode() navigation still needs the guard.
                 const stillHere = state.currentNode && state.currentNode.id === nid;
 
                 if (event.type === 'queued') {
-                    if (stillHere) setGenerationStatus({ text: 'Queued — waiting for Midjourney...' });
+                    setGenerationStatus({ text: 'Queued — waiting for Midjourney...' });
                 } else if (event.type === 'progress') {
-                    if (stillHere) {
-                        const pct = event.progress ?? 0;
-                        setGenerationStatus({ text: `Generating ${pct}%`, progress: pct });
-                    }
+                    const pct = event.progress ?? 0;
+                    setGenerationStatus({ text: `Generating ${pct}%`, progress: pct });
                 } else if (event.type === 'done') {
                     // The image is already saved server-side. Refresh the
                     // node to pick up the new Image row + filename.
@@ -1132,18 +1011,16 @@ async function runGeneration() {
                     if (stillHere) {
                         state.currentNode = fresh;
                         selectNode(fresh, true);
-                        setGenerationStatus({ text: 'Done', progress: 100 });
-                        clearGenerationStatusSoon();
                         toast('Image generated');
                     }
+                    setGenerationStatus({ text: 'Done', progress: 100 });
+                    clearGenerationStatusSoon();
                     await loadTree();
                 } else if (event.type === 'error') {
-                    if (stillHere) {
-                        setGenerationStatus({
-                            text: event.message || 'Generation failed',
-                            error: true,
-                        });
-                    }
+                    setGenerationStatus({
+                        text: event.message || 'Generation failed',
+                        error: true,
+                    });
                 }
             }
         }
@@ -1158,6 +1035,111 @@ async function runGeneration() {
 }
 
 $('#generate-btn').addEventListener('click', runGeneration);
+
+// ===== Quadrant upscale =====
+// Presses U1–U4 on the parent grid's Discord message and creates a new
+// child node under it when the upscale arrives. Reuses the same
+// node-scoped status pill machinery as runGeneration — the pill is
+// anchored to the parent grid node while the upscale runs, then we
+// navigate to the new child once it's persisted.
+async function runUpscale(quadrant) {
+    if (generationInFlight) return;
+    if (!state.currentNode || !state.currentNode.image) return;
+    if (state.currentNode.image.kind !== 'grid') return;
+
+    const pid = state.currentProject.id;
+    const parentNid = state.currentNode.id;
+    const qButtons = document.querySelectorAll('.quadrant-btn');
+
+    generationInFlight = true;
+    generatingNodeId = parentNid;
+    qButtons.forEach(b => b.disabled = true);
+    setGenerationStatus({ text: `Upscaling U${quadrant}...` });
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 360_000);
+
+    const cleanup = () => {
+        generationInFlight = false;
+        qButtons.forEach(b => b.disabled = false);
+        clearTimeout(timeout);
+    };
+
+    try {
+        const res = await api.streamUpscale(pid, parentNid, quadrant, controller.signal);
+
+        if (res.status === 503) {
+            setGenerationStatus({ text: 'Midjourney is not enabled on the server', error: true });
+            cleanup();
+            return;
+        }
+        if (res.status === 400) {
+            const body = await res.text();
+            setGenerationStatus({ text: `Can't upscale: ${body.slice(0, 140)}`, error: true });
+            cleanup();
+            return;
+        }
+        if (!res.ok) {
+            const errBody = await res.text();
+            throw new Error(`Server error (${res.status}): ${errBody.slice(0, 200)}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const raw = line.slice(6);
+                if (raw === '[DONE]') continue;
+
+                let event;
+                try { event = JSON.parse(raw); } catch { continue; }
+
+                if (event.type === 'queued') {
+                    setGenerationStatus({ text: `Upscaling U${quadrant} — queued...` });
+                } else if (event.type === 'progress') {
+                    const pct = event.progress ?? 0;
+                    setGenerationStatus({ text: `Upscaling U${quadrant} ${pct}%`, progress: pct });
+                } else if (event.type === 'done') {
+                    setGenerationStatus({ text: `U${quadrant} done`, progress: 100 });
+                    clearGenerationStatusSoon();
+                    toast(`U${quadrant} upscaled`);
+                    await loadTree();
+                    // Child node id is on the done payload — navigate there.
+                    if (event.node_id) {
+                        await selectNodeById(event.node_id);
+                    }
+                } else if (event.type === 'error') {
+                    setGenerationStatus({
+                        text: event.message || `U${quadrant} upscale failed`,
+                        error: true,
+                    });
+                }
+            }
+        }
+    } catch (err) {
+        const msg = err.name === 'AbortError' ? 'Upscale timed out' : err.message;
+        setGenerationStatus({ text: msg, error: true });
+    } finally {
+        cleanup();
+    }
+}
+
+document.querySelectorAll('.quadrant-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        const q = parseInt(btn.dataset.q, 10);
+        if (action === 'upscale') runUpscale(q);
+    });
+});
 
 // ===== Coaching =====
 async function loadCoaching() {
@@ -1349,9 +1331,16 @@ async function sendCoaching() {
         state.coachingMessages.push({ role: 'assistant', content: fullText });
     } catch (err) {
         cleanup();
-        const msg = err.name === 'AbortError'
-            ? 'Request timed out. The coach took too long to respond.'
-            : err.message;
+        let msg;
+        if (err.name === 'AbortError') {
+            msg = 'Request timed out. The coach took too long to respond.';
+        } else if (err instanceof TypeError) {
+            // fetch() throws TypeError on connection-level failure
+            // (server down, dropped mid-stream, CORS, etc.)
+            msg = 'Connection to the server failed. Is the backend still running?';
+        } else {
+            msg = err.message;
+        }
         assistantEl.innerHTML = `<em style="color:var(--danger)">${msg}</em>`;
     }
 }

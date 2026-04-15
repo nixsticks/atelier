@@ -417,7 +417,7 @@ textarea::placeholder { color: var(--text-muted); }
 }
 
 /* When an image is loaded, the dropzone shouldn't look like a file picker
-   on hover — clicking goes to the lightbox instead. */
+   on hover — clicking enlarges the image instead. */
 .dropzone.has-image {
     cursor: zoom-in;
     border-style: solid;
@@ -426,6 +426,36 @@ textarea::placeholder { color: var(--text-muted); }
 .dropzone.has-image:hover {
     border-color: var(--accent);
     background: transparent;
+}
+
+/* Quadrant actions — only shown for MJ grids (image.kind === 'grid') */
+.quadrant-actions {
+    margin-top: 8px;
+}
+.quadrant-actions[hidden] { display: none; }
+
+.quadrant-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.quadrant-row-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    min-width: 52px;
+}
+
+.quadrant-btn {
+    font-family: var(--font-mono);
+    min-width: 40px;
+}
+.quadrant-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 /* ===== Lightbox ===== */
@@ -439,6 +469,7 @@ textarea::placeholder { color: var(--text-muted); }
     justify-content: center;
     padding: 24px;
     animation: lightbox-fade 0.15s ease;
+    cursor: zoom-out;
 }
 .lightbox[hidden] { display: none; }
 
@@ -462,96 +493,15 @@ textarea::placeholder { color: var(--text-muted); }
 }
 .lightbox-close:hover { color: var(--text-primary); }
 
-.lightbox-stage {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-    max-width: 95vw;
-    max-height: 95vh;
-}
-
-/* Pre-split 2x2 grid laid out as 4 separate clickable thumbs in a row */
-.lightbox-strip {
-    display: flex;
-    gap: 18px;
-    align-items: center;
-    justify-content: center;
-    max-width: 95vw;
-}
-.lightbox-strip[hidden] { display: none; }
-
-.quadrant-thumb {
-    width: 21vw;
-    max-width: 480px;
-    aspect-ratio: 1;
-    background-size: 200% 200%;
-    background-repeat: no-repeat;
-    border: 2px solid var(--border);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    padding: 0;
-    position: relative;
-    transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
-}
-.quadrant-thumb[data-q="0"] { background-position: 0% 0%; }
-.quadrant-thumb[data-q="1"] { background-position: 100% 0%; }
-.quadrant-thumb[data-q="2"] { background-position: 0% 100%; }
-.quadrant-thumb[data-q="3"] { background-position: 100% 100%; }
-
-.quadrant-thumb:hover {
-    border-color: var(--accent);
-    transform: translateY(-1px);
-}
-.quadrant-thumb.selected {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 4px var(--accent-muted);
-}
-
-.quadrant-label {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    padding: 2px 8px;
-    background: rgba(8, 8, 12, 0.7);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    border-radius: var(--radius-sm);
-    pointer-events: none;
-}
-
-/* Whole-image view (toggled fallback for non-grid sources) */
-.lightbox-whole {
-    line-height: 0;
-    box-shadow: var(--shadow-raised);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-}
-.lightbox-whole[hidden] { display: none; }
-
 #lightbox-img {
     display: block;
     max-width: 95vw;
-    max-height: 80vh;
+    max-height: 95vh;
     width: auto;
     height: auto;
-}
-
-.lightbox-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    background: var(--bg-raised);
-    border: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-raised);
     border-radius: var(--radius-sm);
-}
-
-.lightbox-hint {
-    font-size: 12px;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
+    cursor: default;
 }
 
 .dropzone:hover, .dropzone.dragover {

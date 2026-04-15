@@ -81,6 +81,15 @@
                     <p id="dropzone-label">Drop, paste, or click to upload</p>
                     <input id="image-input" type="file" accept="image/*" hidden>
                 </div>
+                <div id="quadrant-actions" class="quadrant-actions" hidden>
+                    <div class="quadrant-row">
+                        <label class="quadrant-row-label">Upscale</label>
+                        <button class="btn-sm quadrant-btn" data-action="upscale" data-q="1">U1</button>
+                        <button class="btn-sm quadrant-btn" data-action="upscale" data-q="2">U2</button>
+                        <button class="btn-sm quadrant-btn" data-action="upscale" data-q="3">U3</button>
+                        <button class="btn-sm quadrant-btn" data-action="upscale" data-q="4">U4</button>
+                    </div>
+                </div>
                 <div class="field-label-row">
                     <label class="field-label" for="image-description">
                         Auto-description <span class="field-hint">(what the coach sees for ancestor nodes)</span>
@@ -159,27 +168,9 @@
         </form>
     </dialog>
 
-    <!-- Lightbox: pre-splits a 2x2 grid into 4 thumbs you can pick from.
-         Toggle to view the whole image for non-grid sources. -->
     <div id="lightbox" class="lightbox" hidden>
         <button id="lightbox-close" class="lightbox-close" title="Close (Esc)">&times;</button>
-        <div class="lightbox-stage">
-            <div id="lightbox-strip" class="lightbox-strip">
-                <button class="quadrant-thumb" data-q="0" type="button" title="U1"><span class="quadrant-label">U1</span></button>
-                <button class="quadrant-thumb" data-q="1" type="button" title="U2"><span class="quadrant-label">U2</span></button>
-                <button class="quadrant-thumb" data-q="2" type="button" title="U3"><span class="quadrant-label">U3</span></button>
-                <button class="quadrant-thumb" data-q="3" type="button" title="U4"><span class="quadrant-label">U4</span></button>
-            </div>
-            <div id="lightbox-whole" class="lightbox-whole" hidden>
-                <img id="lightbox-img" alt="">
-            </div>
-            <div class="lightbox-bar">
-                <span id="lightbox-hint" class="lightbox-hint">Click a quadrant to pick. Esc to close.</span>
-                <button id="lightbox-toggle" class="btn-sm" type="button">View whole</button>
-                <button id="lightbox-clear" class="btn-sm" hidden>Clear</button>
-                <button id="lightbox-save" class="btn-sm btn-primary" hidden>Save selection</button>
-            </div>
-        </div>
+        <img id="lightbox-img" alt="">
     </div>
 
     <script type="module" src="/static/js/app.js"></script>

@@ -72,9 +72,14 @@ async def upload_image(
     except Exception as e:
         raise HTTPException(500, f"Upload failed: {type(e).__name__}: {e}")
 
-    # Clear any stale description from a previously-uploaded image on this node,
-    # then schedule auto-description in the background.
+    # Clear any stale description + MJ provenance from a prior image on
+    # this node. If the row was a grid, the old Discord ids point at a
+    # Discord message that no longer represents this file on disk — the
+    # quadrant action UI would send U1/U2 clicks to the wrong grid.
     image.description = None
+    image.kind = "uploaded"
+    image.discord_message_id = None
+    image.discord_channel_id = None
     await db.flush()
     background_tasks.add_task(
         generate_description_task,
@@ -121,6 +126,9 @@ async def upload_image_from_url(
 
     image = await save_image(db, settings, node, project_id, node_id, resp.content, ext)
     image.description = None
+    image.kind = "uploaded"
+    image.discord_message_id = None
+    image.discord_channel_id = None
     await db.flush()
     background_tasks.add_task(
         generate_description_task,

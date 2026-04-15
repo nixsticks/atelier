@@ -105,6 +105,17 @@ class Image(Base):
     filename: Mapped[str] = mapped_column(String(255))
     feedback: Mapped[str | None] = mapped_column(Text, default=None)
     description: Mapped[str | None] = mapped_column(Text, default=None)
+    # Provenance for MJ results. Null for uploaded images. Snowflakes
+    # stored as strings — int64 fits, but strings are friendlier with
+    # SQLite and we never do arithmetic on them. Populated for kind in
+    # {"grid", "upscale", "variation"} so we can press U/V buttons on
+    # the original Discord message to spawn child images.
+    discord_message_id: Mapped[str | None] = mapped_column(String(32), default=None)
+    discord_channel_id: Mapped[str | None] = mapped_column(String(32), default=None)
+    # "uploaded" | "grid" | "upscale" | "variation". Gates the UI —
+    # only grids get quadrant action buttons. Plain string rather than
+    # Enum to keep SQLite migrations painless.
+    kind: Mapped[str] = mapped_column(String(20), default="uploaded")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

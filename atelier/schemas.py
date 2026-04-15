@@ -26,6 +26,9 @@ class ImageResponse(BaseModel):
     filename: str
     feedback: str | None
     description: str | None
+    kind: str
+    discord_message_id: str | None
+    discord_channel_id: str | None
     created_at: datetime
     tags: list[TagResponse] = []
 

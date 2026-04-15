@@ -18,6 +18,7 @@ import mimetypes
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -105,6 +106,8 @@ async def generate(
                         project_id=project_id,
                         node_id=node_id,
                         grid_url=event.image_url,
+                        discord_message_id=event.discord_message_id,
+                        discord_channel_id=event.discord_channel_id,
                     )
                     yield _sse(payload)
                     return
@@ -126,6 +129,8 @@ async def _ingest_grid(
     project_id: int,
     node_id: int,
     grid_url: str,
+    discord_message_id: str | None,
+    discord_channel_id: str | None,
 ) -> dict:
     """Download the MJ grid, persist it, and schedule auto-description.
 
@@ -163,6 +168,12 @@ async def _ingest_grid(
         )
         # Clear any stale description from a prior image on this node.
         image.description = None
+        # Tag this image as an MJ grid with its Discord provenance so the
+        # frontend can expose quadrant actions (U1–U4 / V1–V4) that talk
+        # to MidjourneyService via the original message.
+        image.kind = "grid"
+        image.discord_message_id = discord_message_id
+        image.discord_channel_id = discord_channel_id
         await db.flush()
         # Commit explicitly so the row is durable before we yield the
         # done event — the dependency's final commit will be a no-op.
@@ -190,4 +201,170 @@ async def _ingest_grid(
         "image_url": grid_url,
         "image_id": image.id,
         "filename": image.filename,
+    }
+
+
+# ============================================================
+# Upscale — press U1..U4 on the grid and ingest the result as
+# a new child node of the grid node.
+# ============================================================
+
+
+class UpscaleRequest(BaseModel):
+    quadrant: int = Field(..., ge=1, le=4)
+
+
+@router.post("/upscale")
+async def upscale(
+    project_id: int,
+    node_id: int,
+    body: UpscaleRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    mj: MidjourneyService = Depends(get_midjourney),
+):
+    """Upscale one quadrant of a grid node and stream the result.
+
+    The parent node's image must be an MJ grid (`kind='grid'`) with
+    Discord ids populated. On the terminal `done` event, we create a
+    new child PromptNode named `U{quadrant}` under the grid node and
+    attach the upscaled image to it; the SSE payload includes the new
+    node/image ids so the frontend can navigate to the child.
+
+    Streams `queued` → `progress*` → `done` | `error`, same shape as
+    `/generate`, plus `node_id` on the terminal `done`.
+    """
+    parent = await _get_node(db, project_id, node_id)
+    if not parent.image or parent.image.kind != "grid":
+        raise HTTPException(
+            400, "Upscale is only available on MJ grid images."
+        )
+    if not parent.image.discord_message_id or not parent.image.discord_channel_id:
+        raise HTTPException(
+            400,
+            "Grid is missing Discord provenance — was it generated before "
+            "the upscale feature was enabled?",
+        )
+
+    grid_msg_id = parent.image.discord_message_id
+    grid_chan_id = parent.image.discord_channel_id
+    quadrant = body.quadrant
+
+    async def stream():
+        try:
+            async for event in mj.upscale(grid_msg_id, grid_chan_id, quadrant):
+                if event.type == "done" and event.image_url:
+                    payload = await _ingest_upscale(
+                        db=db,
+                        request=request,
+                        settings=settings,
+                        project_id=project_id,
+                        parent_node_id=node_id,
+                        parent_prompt_text=parent.prompt_text,
+                        quadrant=quadrant,
+                        upscale_url=event.image_url,
+                        discord_message_id=event.discord_message_id,
+                        discord_channel_id=event.discord_channel_id,
+                    )
+                    yield _sse(payload)
+                    return
+
+                yield _sse(_event_payload(event))
+
+                if event.type == "error":
+                    return
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+async def _ingest_upscale(
+    db: AsyncSession,
+    request: Request,
+    settings: Settings,
+    project_id: int,
+    parent_node_id: int,
+    parent_prompt_text: str,
+    quadrant: int,
+    upscale_url: str,
+    discord_message_id: str | None,
+    discord_channel_id: str | None,
+) -> dict:
+    """Download the upscale, create a child node, persist the image.
+
+    Child-node creation deliberately happens here on `done`, not
+    upfront — if MJ errors, we don't want an orphan empty child node
+    hanging in the tree. Returns a `done` or `error` payload; never
+    raises into the SSE stream.
+    """
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=60,
+            headers={"User-Agent": "Atelier/0.1"},
+        ) as client:
+            resp = await client.get(upscale_url)
+        if resp.status_code != 200:
+            return {
+                "type": "error",
+                "message": f"failed to fetch MJ upscale (HTTP {resp.status_code})",
+            }
+    except httpx.RequestError as e:
+        return {"type": "error", "message": f"failed to fetch MJ upscale: {e}"}
+
+    content_type = resp.headers.get("content-type", "")
+    ext = mimetypes.guess_extension(content_type.split(";")[0]) or ".png"
+    if ext == ".jpe":
+        ext = ".jpg"
+
+    try:
+        # Create the child node. Copying the parent's prompt_text keeps
+        # the "every node has a prompt" invariant and lets the user
+        # iterate/fork off the upscale without typing anything back in.
+        child = PromptNode(
+            project_id=project_id,
+            parent_id=parent_node_id,
+            name=f"U{quadrant}",
+            prompt_text=parent_prompt_text,
+        )
+        db.add(child)
+        await db.flush()
+
+        # save_image expects the node to be loaded with its image
+        # relationship; a freshly-created node has image=None which is
+        # what we want.
+        await db.refresh(child, attribute_names=["image"])
+        image = await save_image(
+            db, settings, child, project_id, child.id, resp.content, ext
+        )
+        image.kind = "upscale"
+        image.discord_message_id = discord_message_id
+        image.discord_channel_id = discord_channel_id
+        image.description = None
+        await db.flush()
+        await db.commit()
+    except Exception as e:
+        logger.exception(
+            "failed to persist MJ upscale under parent node_id=%s",
+            parent_node_id,
+        )
+        return {"type": "error", "message": f"failed to save upscale: {e}"}
+
+    asyncio.create_task(
+        generate_description_task(
+            request.app.state.session_factory,
+            image.id,
+            image_dir(settings, project_id) / image.filename,
+            request.app.state.claude_cli,
+        )
+    )
+
+    return {
+        "type": "done",
+        "image_url": upscale_url,
+        "image_id": image.id,
+        "filename": image.filename,
+        "node_id": child.id,
     }

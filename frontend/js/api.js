@@ -70,4 +70,12 @@ export const api = {
             signal,
         });
     },
+    streamUpscale: (pid, nid, quadrant, signal) => {
+        return fetch(`${BASE}/projects/${pid}/nodes/${nid}/upscale`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quadrant }),
+            signal,
+        });
+    },
 };

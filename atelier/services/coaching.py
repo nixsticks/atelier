@@ -190,6 +190,11 @@ class CoachingService:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Claude CLI stream-json lines can be huge (tool results
+                # with image bytes, long text blocks). Default 64KB causes
+                # `ValueError: Separator is not found, and chunk exceed
+                # the limit` mid-stream. 10MB gives ample headroom.
+                limit=10 * 1024 * 1024,
             )
         except FileNotFoundError:
             yield f"Error: `claude` CLI not found at {binary}."
@@ -200,6 +205,7 @@ class CoachingService:
         proc.stdin.close()
 
         timed_out = False
+        stream_error: str | None = None
         try:
             async for raw_line in proc.stdout:
                 line = raw_line.decode().strip()
@@ -221,6 +227,17 @@ class CoachingService:
         except asyncio.CancelledError:
             proc.kill()
             raise
+        except ValueError as e:
+            # Most commonly: a single stream-json line exceeded the
+            # StreamReader buffer limit. Kill the proc and surface a
+            # readable error to the client instead of letting the SSE
+            # stream collapse with a generic network failure.
+            proc.kill()
+            stream_error = (
+                f"Coach stream failed while reading CLI output: {e}. "
+                "This usually means a single response chunk was larger than "
+                "the buffer limit."
+            )
 
         try:
             rc = await asyncio.wait_for(proc.wait(), timeout=10)
@@ -229,7 +246,9 @@ class CoachingService:
             rc = -1
             timed_out = True
 
-        if timed_out:
+        if stream_error:
+            yield f"\n\n[{stream_error}]"
+        elif timed_out:
             yield "\n\n[Coach timed out]"
         elif rc != 0:
             stderr = await proc.stderr.read()
