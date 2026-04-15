@@ -34,6 +34,8 @@ async def get_project_tree(
             is_starred=node.is_starred,
             created_at=node.created_at,
             has_image=node.image is not None,
+            image_filename=node.image.filename if node.image else None,
+            image_kind=node.image.kind if node.image else None,
             tags=[TagResponse.model_validate(t) for t in node.tags],
             children=[build(c) for c in children_map.get(node.id, [])],
         )

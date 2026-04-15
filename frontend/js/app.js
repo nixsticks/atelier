@@ -352,9 +352,6 @@ function selectNode(node, skipRoute = false) {
         $('#regen-description-btn').disabled = false;
         $('#regen-description-btn').textContent = node.image.description ? 'Regenerate' : 'Generate';
         maybePollDescription(node);
-        // Quadrant actions only apply to MJ grids — uploaded images and
-        // already-upscaled images don't have U/V buttons on Discord.
-        $('#quadrant-actions').hidden = node.image.kind !== 'grid';
     } else {
         $('#image-preview').hidden = true;
         $('#image-dropzone').classList.remove('has-image');
@@ -365,8 +362,11 @@ function selectNode(node, skipRoute = false) {
         $('#image-description').value = '';
         $('#image-description').placeholder = '';
         $('#regen-description-btn').hidden = true;
-        $('#quadrant-actions').hidden = true;
     }
+    // Quadrant strip only applies to MJ grids — uploaded images and
+    // already-upscaled images don't have U buttons on Discord. Rendered
+    // here so it picks up any freshly-loaded tree state.
+    renderQuadrantStrip();
 
     // Load coaching
     loadCoaching();
@@ -1058,12 +1058,83 @@ async function runGeneration() {
 
 $('#generate-btn').addEventListener('click', runGeneration);
 
-// ===== Quadrant upscale =====
+// ===== Quadrant strip + upscale =====
+// Renders two stacked rows under a grid's image:
+//   1. Thumbnails of completed upscale children (U1..U4 in order).
+//   2. A compact "Upscale more" action row with buttons only for the
+//      quadrants that don't have an upscale yet.
+// Either row hides when empty — a brand-new grid shows only row 2
+// (labelled "Upscale:"); a fully-upscaled grid shows only row 1.
+function renderQuadrantStrip() {
+    const wrap = $('#quadrant-actions');
+    const thumbsRow = $('#upscale-thumbs');
+    const actionsRow = $('#upscale-actions');
+
+    const node = state.currentNode;
+    if (!node || !node.image || node.image.kind !== 'grid') {
+        wrap.hidden = true;
+        return;
+    }
+    wrap.hidden = false;
+
+    // Look up upscale children by name (`U1`..`U4`) in the loaded tree.
+    const treeNode = findInTree(state.tree, node.id);
+    const byName = {};
+    for (const c of (treeNode?.children || [])) {
+        if (c.name && /^U[1-4]$/.test(c.name)) byName[c.name] = c;
+    }
+
+    // --- Row 1: thumbnails of completed upscales, in U1..U4 order ---
+    thumbsRow.innerHTML = '';
+    let thumbCount = 0;
+    for (let q = 1; q <= 4; q++) {
+        const child = byName[`U${q}`];
+        if (!child || !child.image_filename) continue;
+        const cell = document.createElement('button');
+        cell.className = 'quadrant-cell filled';
+        cell.title = `Open U${q}`;
+        cell.style.backgroundImage =
+            `url('/images/${node.project_id}/${child.image_filename}')`;
+        const badge = document.createElement('span');
+        badge.className = 'quadrant-cell-label';
+        badge.textContent = `U${q}`;
+        cell.appendChild(badge);
+        cell.addEventListener('click', () => selectNodeById(child.id));
+        thumbsRow.appendChild(cell);
+        thumbCount++;
+    }
+    thumbsRow.hidden = thumbCount === 0;
+
+    // --- Row 2: action buttons for remaining quadrants only ---
+    actionsRow.innerHTML = '';
+    const remaining = [];
+    for (let q = 1; q <= 4; q++) {
+        if (!byName[`U${q}`]) remaining.push(q);
+    }
+    if (remaining.length === 0) {
+        actionsRow.hidden = true;
+    } else {
+        actionsRow.hidden = false;
+        const label = document.createElement('label');
+        label.className = 'quadrant-row-label';
+        label.textContent = thumbCount === 0 ? 'Upscale:' : 'Upscale more:';
+        actionsRow.appendChild(label);
+        for (const q of remaining) {
+            const btn = document.createElement('button');
+            btn.className = 'btn-sm upscale-btn';
+            btn.textContent = `U${q}`;
+            btn.title = `Upscale U${q}`;
+            if (generationInFlight) btn.disabled = true;
+            btn.addEventListener('click', () => runUpscale(q));
+            actionsRow.appendChild(btn);
+        }
+    }
+}
+
 // Presses U1–U4 on the parent grid's Discord message and creates a new
 // child node under it when the upscale arrives. Reuses the same
 // node-scoped status pill machinery as runGeneration — the pill is
-// anchored to the parent grid node while the upscale runs, then we
-// navigate to the new child once it's persisted.
+// anchored to the parent grid node while the upscale runs.
 async function runUpscale(quadrant) {
     if (generationInFlight) return;
     if (!state.currentNode || !state.currentNode.image) return;
@@ -1071,11 +1142,10 @@ async function runUpscale(quadrant) {
 
     const pid = state.currentProject.id;
     const parentNid = state.currentNode.id;
-    const qButtons = document.querySelectorAll('.quadrant-btn');
 
     generationInFlight = true;
     generatingNodeId = parentNid;
-    qButtons.forEach(b => b.disabled = true);
+    renderQuadrantStrip();  // re-render to disable empty cells
     setGenerationStatus({ text: `Upscaling U${quadrant}...` });
 
     const controller = new AbortController();
@@ -1083,8 +1153,8 @@ async function runUpscale(quadrant) {
 
     const cleanup = () => {
         generationInFlight = false;
-        qButtons.forEach(b => b.disabled = false);
         clearTimeout(timeout);
+        renderQuadrantStrip();  // re-render to re-enable empty cells
     };
 
     try {
@@ -1134,10 +1204,12 @@ async function runUpscale(quadrant) {
                     setGenerationStatus({ text: `U${quadrant} done`, progress: 100 });
                     clearGenerationStatusSoon();
                     toast(`U${quadrant} added to tree`);
-                    // Refresh the tree so the new child appears, but
-                    // stay on the parent grid so the user can keep
-                    // picking more quadrants without extra navigation.
+                    // Refresh the tree so the new child appears (both in
+                    // the sidebar and in the quadrant strip), but stay
+                    // on the parent grid so the user can keep picking
+                    // more quadrants without extra navigation.
                     await loadTree();
+                    renderQuadrantStrip();
                 } else if (event.type === 'error') {
                     setGenerationStatus({
                         text: event.message || `U${quadrant} upscale failed`,
@@ -1154,13 +1226,8 @@ async function runUpscale(quadrant) {
     }
 }
 
-document.querySelectorAll('.quadrant-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const action = btn.dataset.action;
-        const q = parseInt(btn.dataset.q, 10);
-        if (action === 'upscale') runUpscale(q);
-    });
-});
+// Listeners are wired per-cell inside renderQuadrantStrip — no static
+// global listener needed now that cells are dynamic.
 
 // ===== Coaching =====
 async function loadCoaching() {

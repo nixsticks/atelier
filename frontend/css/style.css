@@ -428,17 +428,31 @@ textarea::placeholder { color: var(--text-muted); }
     background: transparent;
 }
 
-/* Quadrant actions — only shown for MJ grids (image.kind === 'grid') */
+/* Quadrant actions — only shown for MJ grids (image.kind === 'grid').
+   Two stacked rows: completed upscale thumbnails on top, a compact
+   "Upscale more" action row below with buttons only for the quadrants
+   not yet done. Either row hides when empty. */
 .quadrant-actions {
     margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 .quadrant-actions[hidden] { display: none; }
 
-.quadrant-row {
+.upscale-thumbs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.upscale-thumbs[hidden] { display: none; }
+
+.upscale-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
+.upscale-actions[hidden] { display: none; }
 
 .quadrant-row-label {
     font-size: 11px;
@@ -446,14 +460,47 @@ textarea::placeholder { color: var(--text-muted); }
     font-family: var(--font-mono);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    min-width: 52px;
+    margin-right: 4px;
 }
 
-.quadrant-btn {
+.quadrant-cell {
+    width: 96px;
+    height: 96px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    cursor: pointer;
+    padding: 0;
+    position: relative;
+    transition: border-color 0.12s;
+    overflow: hidden;
+}
+.quadrant-cell:hover { border-color: var(--accent); }
+
+.quadrant-cell.filled {
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+
+.quadrant-cell-label {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    padding: 1px 6px;
+    background: rgba(8, 8, 12, 0.72);
+    color: var(--text-primary);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+}
+
+.upscale-btn {
     font-family: var(--font-mono);
     min-width: 40px;
 }
-.quadrant-btn:disabled {
+.upscale-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
 }

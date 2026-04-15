@@ -78,6 +78,8 @@ class PromptTreeNode(BaseModel):
     is_starred: bool
     created_at: datetime
     has_image: bool = False
+    image_filename: str | None = None
+    image_kind: str | None = None
     tags: list[TagResponse] = []
     children: list["PromptTreeNode"] = []
 
