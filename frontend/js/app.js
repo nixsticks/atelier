@@ -443,11 +443,38 @@ $('#delete-node-btn').addEventListener('click', async () => {
     toast('Deleted');
 });
 
+// Pulls the fenced code block from the most recent assistant coaching
+// message. Coach output always ends with a single ``` block under
+// "### Try this" — that's the refined prompt we want to prefill.
+// Returns null if there's no assistant message yet or no code block.
+function extractCoachSuggestedPrompt() {
+    const msgs = state.coachingMessages || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role !== 'assistant') continue;
+        const content = msgs[i].content || '';
+        const re = /```[^\n]*\n([\s\S]*?)```/g;
+        let match;
+        let last = null;
+        while ((match = re.exec(content)) !== null) last = match[1];
+        return last ? last.trim() : null;
+    }
+    return null;
+}
+
 $('#iterate-btn').addEventListener('click', () => {
     if (!state.currentNode) return;
     $('#iterate-dialog-title').textContent = 'Iterate';
     $('#iterate-name').value = '';
-    $('#iterate-prompt-text').value = state.currentNode.prompt_text;
+    // Prefer the coach's most recent suggested prompt when the user
+    // has been chatting with the coach — that's usually what they want
+    // to iterate on, not the raw parent prompt.
+    const suggested = extractCoachSuggestedPrompt();
+    console.debug('[iterate prefill]', {
+        coachMsgCount: (state.coachingMessages || []).length,
+        usingCoachSuggestion: Boolean(suggested),
+        suggestedPreview: suggested ? suggested.slice(0, 80) : null,
+    });
+    $('#iterate-prompt-text').value = suggested || state.currentNode.prompt_text;
     $('#iterate-notes').value = '';
     resetRootImageUi();
     $('#root-image-section').hidden = false;
