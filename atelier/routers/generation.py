@@ -205,6 +205,43 @@ async def _ingest_grid(
 
 
 # ============================================================
+# Image CDN URL — re-fetch a live Discord CDN URL for an MJ
+# image so it can be used as a --cref / --sref reference in a
+# new prompt. MJ CDN URLs have signed tokens that expire, so
+# we can't persist them — fetch on demand each time.
+# ============================================================
+
+
+@router.get("/image/cdn-url")
+async def get_image_cdn_url(
+    project_id: int,
+    node_id: int,
+    db: AsyncSession = Depends(get_db),
+    mj: MidjourneyService = Depends(get_midjourney),
+):
+    node = await _get_node(db, project_id, node_id)
+    if not node.image:
+        raise HTTPException(404, "No image on this node")
+    if node.image.kind == "uploaded":
+        raise HTTPException(
+            400, "This image isn't from Midjourney — no CDN URL available"
+        )
+    if not node.image.discord_message_id or not node.image.discord_channel_id:
+        raise HTTPException(
+            400,
+            "Image is missing Discord provenance — was it ingested before "
+            "the Discord ID migration?",
+        )
+    try:
+        url = await mj.fetch_attachment_url(
+            node.image.discord_message_id, node.image.discord_channel_id
+        )
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    return {"url": url}
+
+
+# ============================================================
 # Upscale — press U1..U4 on the grid and ingest the result as
 # a new child node of the grid node.
 # ============================================================

@@ -78,4 +78,6 @@ export const api = {
             signal,
         });
     },
+    getImageCdnUrl: (pid, nid) =>
+        request(`/projects/${pid}/nodes/${nid}/image/cdn-url`),
 };

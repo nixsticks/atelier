@@ -313,6 +313,34 @@ class MidjourneyService:
 
     # ---- public API ----
 
+    async def fetch_attachment_url(
+        self, message_id: str, channel_id: str
+    ) -> str:
+        """Return the current Discord CDN URL for a stored MJ message.
+
+        MJ CDN URLs have signed tokens that expire after a few hours —
+        we can't persist them. This re-fetches the message so `--cref`
+        / `--sref` references stay fresh each time the user iterates.
+
+        Raises RuntimeError on any failure (channel/message not found,
+        no attachments, client not ready) so the caller can surface it
+        as an HTTP error.
+        """
+        if not self._ready.is_set():
+            raise RuntimeError("Midjourney service not ready")
+        try:
+            channel = self._client.get_channel(int(channel_id))
+            if channel is None:
+                channel = await self._client.fetch_channel(int(channel_id))
+            msg = await channel.fetch_message(int(message_id))
+        except Exception as e:
+            raise RuntimeError(
+                f"couldn't fetch message {message_id}: {e}"
+            ) from e
+        if not msg.attachments:
+            raise RuntimeError(f"message {message_id} has no attachments")
+        return msg.attachments[0].url
+
     async def upscale(
         self,
         grid_message_id: str,

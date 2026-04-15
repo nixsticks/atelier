@@ -505,6 +505,38 @@ textarea::placeholder { color: var(--text-muted); }
     cursor: not-allowed;
 }
 
+/* Iterate dialog: ref-mode selector (--cref / --sref).
+   Only shown when the current node's image is MJ-originated — the
+   backend can only resolve a live CDN URL for those. */
+.iterate-ref {
+    margin-bottom: 12px;
+}
+.iterate-ref[hidden] { display: none; }
+
+.iterate-ref-label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+}
+
+.iterate-ref-options {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.iterate-ref-options label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
 /* ===== Lightbox ===== */
 .lightbox {
     position: fixed;

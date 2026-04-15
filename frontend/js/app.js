@@ -461,6 +461,21 @@ function extractCoachSuggestedPrompt() {
     return null;
 }
 
+// The ref selector only makes sense when the current node has an
+// MJ-originated image — only those have the Discord message id the
+// backend needs to re-fetch a live CDN URL.
+function configureIterateRefSelector() {
+    const section = $('#iterate-ref-section');
+    const img = state.currentNode?.image;
+    const canRef = img && img.kind && img.kind !== 'uploaded'
+        && img.discord_message_id && img.discord_channel_id;
+    section.hidden = !canRef;
+    // Always reset to "None" when opening the dialog — stale selection
+    // from a previous open would be surprising.
+    const none = section.querySelector('input[value=""]');
+    if (none) none.checked = true;
+}
+
 $('#iterate-btn').addEventListener('click', () => {
     if (!state.currentNode) return;
     $('#iterate-dialog-title').textContent = 'Iterate';
@@ -473,6 +488,7 @@ $('#iterate-btn').addEventListener('click', () => {
     $('#iterate-notes').value = '';
     resetRootImageUi();
     $('#root-image-section').hidden = false;
+    configureIterateRefSelector();
     $('#iterate-dialog').showModal();
     $('#iterate-dialog').dataset.mode = 'iterate';
 });
@@ -485,6 +501,7 @@ $('#fork-btn').addEventListener('click', () => {
     $('#iterate-notes').value = '';
     resetRootImageUi();
     $('#root-image-section').hidden = false;
+    configureIterateRefSelector();
     $('#iterate-dialog').showModal();
     $('#iterate-dialog').dataset.mode = 'fork';
 });
@@ -493,10 +510,31 @@ $('#iterate-dialog').querySelector('form').addEventListener('submit', async (e) 
     // Root mode is handled by its own capture-phase listener.
     if ($('#iterate-dialog').dataset.mode === 'root') return;
     if (!state.currentNode) return;
+
+    let promptText = $('#iterate-prompt-text').value;
+
+    // If the user picked --cref or --sref, fetch a live CDN URL for
+    // the current image and append the flag. Skip if the prompt
+    // already contains that flag — don't duplicate.
+    const refFlag = $('#iterate-ref-section').querySelector(
+        'input[name="iterate-ref"]:checked'
+    )?.value;
+    if (refFlag && !promptText.includes(refFlag)) {
+        try {
+            const { url } = await api.getImageCdnUrl(
+                state.currentProject.id, state.currentNode.id
+            );
+            promptText = `${promptText.trim()} ${refFlag} ${url}`;
+        } catch (err) {
+            toast(`Couldn't fetch reference URL: ${err.message}`);
+            return;  // abort create — don't make a node without the ref
+        }
+    }
+
     const data = {
         parent_id: state.currentNode.id,
         name: $('#iterate-name').value || null,
-        prompt_text: $('#iterate-prompt-text').value,
+        prompt_text: promptText,
         notes: $('#iterate-notes').value || null,
     };
     const newNode = await api.createNode(state.currentProject.id, data);
