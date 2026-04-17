@@ -78,6 +78,14 @@ export const api = {
             signal,
         });
     },
+    streamVariation: (pid, nid, quadrant, signal) => {
+        return fetch(`${BASE}/projects/${pid}/nodes/${nid}/variation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quadrant }),
+            signal,
+        });
+    },
     getImageCdnUrl: (pid, nid) =>
         request(`/projects/${pid}/nodes/${nid}/image/cdn-url`),
 };

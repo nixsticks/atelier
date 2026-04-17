@@ -496,6 +496,15 @@ textarea::placeholder { color: var(--text-muted); }
     pointer-events: none;
 }
 
+.action-btn-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.action-btn-row + .action-btn-row {
+    margin-top: 4px;
+}
+
 .upscale-btn {
     font-family: var(--font-mono);
     min-width: 40px;

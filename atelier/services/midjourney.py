@@ -341,25 +341,18 @@ class MidjourneyService:
             raise RuntimeError(f"message {message_id} has no attachments")
         return msg.attachments[0].url
 
-    async def upscale(
+    async def _press_grid_button(
         self,
         grid_message_id: str,
         grid_channel_id: str,
-        quadrant: int,
+        button_label: str,
     ) -> AsyncGenerator[GenerationEvent, None]:
-        """Press U{quadrant} on a prior grid and stream the upscale result.
+        """Shared implementation for upscale/variation.
 
-        The spike (`scripts/mj_button_spike.py`) confirmed that pressing
-        a component button via discord.py-self triggers a fresh MJ reply
-        containing the upscaled image. That reply's id/channel/url are
-        captured on the terminal `done` event just like `generate()`.
-
-        Errors emitted as `GenerationEvent(type="error", ...)`:
-        - service not ready / channel unresolved
-        - invalid quadrant
-        - grid message not found or no longer has the requested button
-        - button press raised
-        - timeout waiting for MJ
+        Fetches the grid message, locates the button by label, presses
+        it, and streams events back through the same state machine as
+        `generate()`. `_ignore_message_id` filters out edits to the
+        grid message that happen because MJ restyles the pressed button.
         """
         if not self._ready.is_set():
             yield GenerationEvent(
@@ -373,11 +366,6 @@ class MidjourneyService:
                 message="Midjourney channel not available",
             )
             return
-        if quadrant not in (1, 2, 3, 4):
-            yield GenerationEvent(
-                type="error", message=f"quadrant must be 1..4, got {quadrant}"
-            )
-            return
 
         async with self._lock:
             queue: asyncio.Queue[GenerationEvent] = asyncio.Queue()
@@ -386,9 +374,6 @@ class MidjourneyService:
             try:
                 yield GenerationEvent(type="queued")
 
-                # Resolve the grid message. Prefer the channel the grid
-                # came from (stored per-image) so this still works if the
-                # service has since been pointed at a different channel.
                 try:
                     channel = self._client.get_channel(int(grid_channel_id))
                     if channel is None:
@@ -404,12 +389,12 @@ class MidjourneyService:
                     )
                     return
 
-                button = _find_component_button(grid_msg, f"U{quadrant}")
+                button = _find_component_button(grid_msg, button_label)
                 if button is None:
                     yield GenerationEvent(
                         type="error",
                         message=(
-                            f"U{quadrant} button not found on grid message "
+                            f"{button_label} button not found on grid message "
                             f"{grid_message_id} (MJ may have expired the buttons)"
                         ),
                     )
@@ -418,18 +403,15 @@ class MidjourneyService:
                 try:
                     await button.click()
                 except Exception as e:
-                    logger.exception("button.click() raised for U%d", quadrant)
+                    logger.exception(
+                        "button.click() raised for %s", button_label
+                    )
                     yield GenerationEvent(
                         type="error",
-                        message=f"couldn't press U{quadrant}: {e}",
+                        message=f"couldn't press {button_label}: {e}",
                     )
                     return
 
-                # Drain events from MJ's reply to the button press. Same
-                # state machine as `generate` — progress edits followed by
-                # a final message with an attachment and no progress
-                # markers. `_ignore_message_id` filters out edits to the
-                # grid that happen because MJ restyles the pressed button.
                 while True:
                     try:
                         event = await asyncio.wait_for(
@@ -440,7 +422,7 @@ class MidjourneyService:
                             type="error",
                             message=(
                                 f"timed out after {int(self._timeout)}s "
-                                "waiting for Midjourney upscale"
+                                f"waiting for Midjourney {button_label}"
                             ),
                         )
                         return
@@ -450,6 +432,34 @@ class MidjourneyService:
             finally:
                 self._active_queue = None
                 self._ignore_message_id = None
+
+    async def upscale(
+        self, grid_message_id: str, grid_channel_id: str, quadrant: int,
+    ) -> AsyncGenerator[GenerationEvent, None]:
+        """Press U{quadrant} on a prior grid and stream the upscale."""
+        if quadrant not in (1, 2, 3, 4):
+            yield GenerationEvent(
+                type="error", message=f"quadrant must be 1..4, got {quadrant}"
+            )
+            return
+        async for event in self._press_grid_button(
+            grid_message_id, grid_channel_id, f"U{quadrant}"
+        ):
+            yield event
+
+    async def variation(
+        self, grid_message_id: str, grid_channel_id: str, quadrant: int,
+    ) -> AsyncGenerator[GenerationEvent, None]:
+        """Press V{quadrant} on a prior grid and stream the variation."""
+        if quadrant not in (1, 2, 3, 4):
+            yield GenerationEvent(
+                type="error", message=f"quadrant must be 1..4, got {quadrant}"
+            )
+            return
+        async for event in self._press_grid_button(
+            grid_message_id, grid_channel_id, f"V{quadrant}"
+        ):
+            yield event
 
     async def generate(self, prompt: str) -> AsyncGenerator[GenerationEvent, None]:
         """Submit a /imagine prompt and stream events back.

@@ -467,7 +467,8 @@ function extractCoachSuggestedPrompt() {
 function configureIterateRefSelector() {
     const section = $('#iterate-ref-section');
     const img = state.currentNode?.image;
-    const canRef = img && img.kind && img.kind !== 'uploaded'
+    const mjKinds = ['grid', 'upscale', 'variation'];
+    const canRef = img && mjKinds.includes(img.kind)
         && img.discord_message_id && img.discord_channel_id;
     section.hidden = !canRef;
     // Always reset to "None" when opening the dialog — stale selection
@@ -1191,63 +1192,92 @@ function renderQuadrantStrip() {
     const actionsRow = $('#upscale-actions');
 
     const node = state.currentNode;
-    if (!node || !node.image || node.image.kind !== 'grid') {
+    // Both grids and variation results are 2x2 — show quadrant actions for both.
+    const isGrid = node?.image && (node.image.kind === 'grid' || node.image.kind === 'variation');
+    if (!isGrid) {
         wrap.hidden = true;
         return;
     }
     wrap.hidden = false;
 
-    // Look up upscale children by name (`U1`..`U4`) in the loaded tree.
+    // Look up children by name (`U1`..`U4`, `V1`..`V4`) in the loaded tree.
     const treeNode = findInTree(state.tree, node.id);
     const byName = {};
     for (const c of (treeNode?.children || [])) {
-        if (c.name && /^U[1-4]$/.test(c.name)) byName[c.name] = c;
+        if (c.name && /^[UV][1-4]$/.test(c.name)) byName[c.name] = c;
     }
 
-    // --- Row 1: thumbnails of completed upscales, in U1..U4 order ---
+    // --- Thumbnails row: completed upscales + variations ---
     thumbsRow.innerHTML = '';
     let thumbCount = 0;
-    for (let q = 1; q <= 4; q++) {
-        const child = byName[`U${q}`];
-        if (!child || !child.image_filename) continue;
-        const cell = document.createElement('button');
-        cell.className = 'quadrant-cell filled';
-        cell.title = `Open U${q}`;
-        cell.style.backgroundImage =
-            `url('/images/${node.project_id}/${child.image_filename}')`;
-        const badge = document.createElement('span');
-        badge.className = 'quadrant-cell-label';
-        badge.textContent = `U${q}`;
-        cell.appendChild(badge);
-        cell.addEventListener('click', () => selectNodeById(child.id));
-        thumbsRow.appendChild(cell);
-        thumbCount++;
+    for (const prefix of ['U', 'V']) {
+        for (let q = 1; q <= 4; q++) {
+            const name = `${prefix}${q}`;
+            const child = byName[name];
+            if (!child || !child.image_filename) continue;
+            const cell = document.createElement('button');
+            cell.className = 'quadrant-cell filled';
+            cell.title = `Open ${name}`;
+            cell.style.backgroundImage =
+                `url('/images/${node.project_id}/${child.image_filename}')`;
+            const badge = document.createElement('span');
+            badge.className = 'quadrant-cell-label';
+            badge.textContent = name;
+            cell.appendChild(badge);
+            cell.addEventListener('click', () => selectNodeById(child.id));
+            thumbsRow.appendChild(cell);
+            thumbCount++;
+        }
     }
     thumbsRow.hidden = thumbCount === 0;
 
-    // --- Row 2: action buttons for remaining quadrants only ---
+    // --- Action rows: upscale + vary for remaining quadrants ---
     actionsRow.innerHTML = '';
-    const remaining = [];
+    const remainingU = [];
+    const remainingV = [];
     for (let q = 1; q <= 4; q++) {
-        if (!byName[`U${q}`]) remaining.push(q);
+        if (!byName[`U${q}`]) remainingU.push(q);
+        if (!byName[`V${q}`]) remainingV.push(q);
     }
-    if (remaining.length === 0) {
-        actionsRow.hidden = true;
-    } else {
-        actionsRow.hidden = false;
+    const hasActions = remainingU.length > 0 || remainingV.length > 0;
+    actionsRow.hidden = !hasActions;
+
+    if (remainingU.length > 0) {
+        const row = document.createElement('div');
+        row.className = 'action-btn-row';
         const label = document.createElement('label');
         label.className = 'quadrant-row-label';
-        label.textContent = thumbCount === 0 ? 'Upscale:' : 'Upscale more:';
-        actionsRow.appendChild(label);
-        for (const q of remaining) {
+        label.textContent = 'Upscale:';
+        row.appendChild(label);
+        for (const q of remainingU) {
             const btn = document.createElement('button');
             btn.className = 'btn-sm upscale-btn';
             btn.textContent = `U${q}`;
             btn.title = `Upscale U${q}`;
             if (generationInFlight) btn.disabled = true;
             btn.addEventListener('click', () => runUpscale(q));
-            actionsRow.appendChild(btn);
+            row.appendChild(btn);
         }
+        actionsRow.appendChild(row);
+    }
+
+    if (remainingV.length > 0) {
+        const row = document.createElement('div');
+        row.className = 'action-btn-row';
+        const label = document.createElement('label');
+        label.className = 'quadrant-row-label';
+        label.textContent = 'Vary:';
+        row.appendChild(label);
+        for (const q of remainingV) {
+            const btn = document.createElement('button');
+            btn.className = 'btn-sm upscale-btn';
+            btn.textContent = `V${q}`;
+            btn.title = `Vary V${q}`;
+            if (generationInFlight) btn.disabled = true;
+            btn.addEventListener('click', () => runVariation(q));
+            row.appendChild(btn);
+        }
+        actionsRow.appendChild(row);
     }
 }
 
@@ -1346,8 +1376,93 @@ async function runUpscale(quadrant) {
     }
 }
 
-// Listeners are wired per-cell inside renderQuadrantStrip — no static
-// global listener needed now that cells are dynamic.
+async function runVariation(quadrant) {
+    if (generationInFlight) return;
+    if (!state.currentNode || !state.currentNode.image) return;
+    const kind = state.currentNode.image.kind;
+    if (kind !== 'grid' && kind !== 'variation') return;
+
+    const pid = state.currentProject.id;
+    const parentNid = state.currentNode.id;
+
+    generationInFlight = true;
+    generatingNodeId = parentNid;
+    renderQuadrantStrip();
+    setGenerationStatus({ text: `Varying V${quadrant}...` });
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 360_000);
+
+    const cleanup = () => {
+        generationInFlight = false;
+        clearTimeout(timeout);
+        renderQuadrantStrip();
+    };
+
+    try {
+        const res = await api.streamVariation(pid, parentNid, quadrant, controller.signal);
+
+        if (res.status === 503) {
+            setGenerationStatus({ text: 'Midjourney is not enabled on the server', error: true });
+            cleanup();
+            return;
+        }
+        if (res.status === 400) {
+            const body = await res.text();
+            setGenerationStatus({ text: `Can't vary: ${body.slice(0, 140)}`, error: true });
+            cleanup();
+            return;
+        }
+        if (!res.ok) {
+            const errBody = await res.text();
+            throw new Error(`Server error (${res.status}): ${errBody.slice(0, 200)}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const raw = line.slice(6);
+                if (raw === '[DONE]') continue;
+
+                let event;
+                try { event = JSON.parse(raw); } catch { continue; }
+
+                if (event.type === 'queued') {
+                    setGenerationStatus({ text: `Varying V${quadrant} — queued...` });
+                } else if (event.type === 'progress') {
+                    const pct = event.progress ?? 0;
+                    setGenerationStatus({ text: `Varying V${quadrant} ${pct}%`, progress: pct });
+                } else if (event.type === 'done') {
+                    setGenerationStatus({ text: `V${quadrant} done`, progress: 100 });
+                    clearGenerationStatusSoon();
+                    toast(`V${quadrant} added to tree`);
+                    await loadTree();
+                    renderQuadrantStrip();
+                } else if (event.type === 'error') {
+                    setGenerationStatus({
+                        text: event.message || `V${quadrant} variation failed`,
+                        error: true,
+                    });
+                }
+            }
+        }
+    } catch (err) {
+        const msg = err.name === 'AbortError' ? 'Variation timed out' : err.message;
+        setGenerationStatus({ text: msg, error: true });
+    } finally {
+        cleanup();
+    }
+}
 
 // ===== Coaching =====
 async function loadCoaching() {
