@@ -537,6 +537,26 @@ textarea::placeholder { color: var(--text-muted); }
     cursor: pointer;
 }
 
+.iterate-ref-warning {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-left: 3px solid #e8a84a;
+    border-radius: var(--radius-sm);
+    background: rgba(232, 168, 74, 0.08);
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.iterate-ref-warning[hidden] { display: none; }
+
+.iterate-ref-warning .btn-sm {
+    flex-shrink: 0;
+}
+
 /* ===== Lightbox ===== */
 .lightbox {
     position: fixed;

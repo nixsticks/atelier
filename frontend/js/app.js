@@ -474,7 +474,75 @@ function configureIterateRefSelector() {
     // from a previous open would be surprising.
     const none = section.querySelector('input[value=""]');
     if (none) none.checked = true;
+    updateIterateRefWarning();
 }
+
+// Detects `--niji` in a prompt. Returns the version number if present
+// (defaulting bare `--niji` to 7, MJ's current niji). null if absent.
+function detectNijiVersion(prompt) {
+    const m = /--niji(?:\s+(\d+(?:\.\d+)?))?/i.exec(prompt || '');
+    if (!m) return null;
+    return m[1] ? parseFloat(m[1]) : 7;
+}
+
+// Returns a human-readable incompatibility string, or null if OK.
+// Compatibility table per ~/.claude/skills/midjourney/knowledge/character-consistency.md:
+//   --oref: V7/V8 only (no --niji of any version)
+//   --cref: V6/V6.1 and Niji 6 (NOT Niji 7)
+//   --sref: works with everything
+function refIncompatibility(refFlag, prompt) {
+    if (!refFlag || refFlag === '--sref' || refFlag === 'niji6-cref') return null;
+    const niji = detectNijiVersion(prompt);
+    if (niji === null) return null;
+    if (refFlag === '--oref') {
+        return `${refFlag} isn't supported with --niji (Omni Reference is V7/V8 only).`;
+    }
+    if (refFlag === '--cref' && niji >= 7) {
+        return `${refFlag} isn't supported with --niji ${niji}. --cref works on V6/V6.1 and Niji 6 only.`;
+    }
+    return null;
+}
+
+function stripNijiFromPrompt(prompt) {
+    return (prompt || '').replace(/--niji(?:\s+\d+(?:\.\d+)?)?\s*/gi, '').trim();
+}
+
+// Strip all model version flags (--niji X, --v X, --version X) so
+// the "Niji 6 + --cref" preset can inject a clean --niji 6 without
+// conflicting with whatever was in the prompt before.
+function stripModelFlags(prompt) {
+    return (prompt || '')
+        .replace(/--niji(?:\s+\d+(?:\.\d+)?)?\s*/gi, '')
+        .replace(/--(?:v|version)(?:\s+\d+(?:\.\d+)?)?\s*/gi, '')
+        .trim();
+}
+
+function updateIterateRefWarning() {
+    const warnEl = $('#iterate-ref-warning');
+    const checked = $('#iterate-ref-section').querySelector(
+        'input[name="iterate-ref"]:checked'
+    );
+    const refFlag = checked?.value || '';
+    const msg = refIncompatibility(refFlag, $('#iterate-prompt-text').value);
+    if (!msg) { warnEl.hidden = true; warnEl.innerHTML = ''; return; }
+    warnEl.hidden = false;
+    warnEl.innerHTML = `<span>${msg}</span>`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn-sm';
+    btn.textContent = 'Strip --niji';
+    btn.addEventListener('click', () => {
+        const promptEl = $('#iterate-prompt-text');
+        promptEl.value = stripNijiFromPrompt(promptEl.value);
+        updateIterateRefWarning();
+    });
+    warnEl.appendChild(btn);
+}
+
+// Keep the warning in sync with both user actions: radio change AND
+// edits to the prompt textarea. Wired once at module init.
+$('#iterate-ref-section').addEventListener('change', updateIterateRefWarning);
+$('#iterate-prompt-text').addEventListener('input', updateIterateRefWarning);
 
 $('#iterate-btn').addEventListener('click', () => {
     if (!state.currentNode) return;
@@ -513,21 +581,35 @@ $('#iterate-dialog').querySelector('form').addEventListener('submit', async (e) 
 
     let promptText = $('#iterate-prompt-text').value;
 
-    // If the user picked --cref or --sref, fetch a live CDN URL for
-    // the current image and append the flag. Skip if the prompt
-    // already contains that flag — don't duplicate.
-    const refFlag = $('#iterate-ref-section').querySelector(
+    // Handle image-reference options. The radio value is either a raw
+    // MJ flag (--oref, --cref, --sref) or the composite preset
+    // "niji6-cref" which switches the model AND adds --cref.
+    const refChoice = $('#iterate-ref-section').querySelector(
         'input[name="iterate-ref"]:checked'
     )?.value;
-    if (refFlag && !promptText.includes(refFlag)) {
-        try {
-            const { url } = await api.getImageCdnUrl(
-                state.currentProject.id, state.currentNode.id
-            );
-            promptText = `${promptText.trim()} ${refFlag} ${url}`;
-        } catch (err) {
-            toast(`Couldn't fetch reference URL: ${err.message}`);
-            return;  // abort create — don't make a node without the ref
+
+    if (refChoice) {
+        let refFlag;
+        if (refChoice === 'niji6-cref') {
+            // Strip any existing model flag so we don't clash, then
+            // inject --niji 6 and use --cref.
+            promptText = stripModelFlags(promptText);
+            promptText = `${promptText.trim()} --niji 6`;
+            refFlag = '--cref';
+        } else {
+            refFlag = refChoice;
+        }
+
+        if (!promptText.includes(refFlag)) {
+            try {
+                const { url } = await api.getImageCdnUrl(
+                    state.currentProject.id, state.currentNode.id
+                );
+                promptText = `${promptText.trim()} ${refFlag} ${url}`;
+            } catch (err) {
+                toast(`Couldn't fetch reference URL: ${err.message}`);
+                return;  // abort — don't create a node without the ref
+            }
         }
     }
 

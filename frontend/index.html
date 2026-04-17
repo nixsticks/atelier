@@ -152,9 +152,12 @@
                 <label class="iterate-ref-label">Use this image as</label>
                 <div class="iterate-ref-options">
                     <label><input type="radio" name="iterate-ref" value="" checked> None</label>
-                    <label><input type="radio" name="iterate-ref" value="--cref"> --cref (character)</label>
-                    <label><input type="radio" name="iterate-ref" value="--sref"> --sref (style)</label>
+                    <label><input type="radio" name="iterate-ref" value="niji6-cref"> Niji 6 + --cref (anime character)</label>
+                    <label><input type="radio" name="iterate-ref" value="--oref"> --oref (character — V7 / V8, not niji)</label>
+                    <label><input type="radio" name="iterate-ref" value="--cref"> --cref (character — V6 / Niji 6)</label>
+                    <label><input type="radio" name="iterate-ref" value="--sref"> --sref (style — all models)</label>
                 </div>
+                <div id="iterate-ref-warning" class="iterate-ref-warning" hidden></div>
             </div>
             <div id="root-image-section" hidden>
                 <div id="root-image-dropzone" class="dropzone">
