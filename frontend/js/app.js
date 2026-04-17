@@ -1288,7 +1288,8 @@ function renderQuadrantStrip() {
 async function runUpscale(quadrant) {
     if (generationInFlight) return;
     if (!state.currentNode || !state.currentNode.image) return;
-    if (state.currentNode.image.kind !== 'grid') return;
+    const kind = state.currentNode.image.kind;
+    if (kind !== 'grid' && kind !== 'variation') return;
 
     const pid = state.currentProject.id;
     const parentNid = state.currentNode.id;
