@@ -285,10 +285,26 @@ class MidjourneyService:
                 )
                 return
 
-        # Final state: has attachments AND no in-flight markers.
-        if message.attachments and not (
+        # Final state: has attachments, no in-flight markers, AND
+        # message components (U1–U4, V1–V4, 🔄). MJ always attaches
+        # buttons to final outputs but never to progress messages.
+        # Without the components check, a progress-edit that briefly
+        # clears its markers can be mistaken for the final — we'd
+        # store its message ID, MJ then replaces it with the real
+        # final (new message), and the old ID becomes a 404.
+        has_components = bool(getattr(message, "components", None))
+        if message.attachments and has_components and not (
             PROGRESS_PERCENT.search(content) or WAITING_MARKERS.search(content)
         ):
+            logger.info(
+                "MJ DONE accepted: msg_id=%s components=%d attachments=%d "
+                "is_edit=%s content_start=%r",
+                message.id,
+                len(getattr(message, "components", []) or []),
+                len(message.attachments),
+                is_edit,
+                content[:80].replace("\n", " "),
+            )
             await self._active_queue.put(
                 GenerationEvent(
                     type="done",
