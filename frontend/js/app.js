@@ -1100,6 +1100,7 @@ async function runGeneration() {
         btn.disabled = false;
         btn.textContent = 'Generate';
         clearTimeout(timeout);
+        renderQuadrantStrip();
     };
 
     try {

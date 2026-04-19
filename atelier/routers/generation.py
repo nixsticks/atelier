@@ -235,8 +235,7 @@ async def get_image_cdn_url(
 
 
 # ============================================================
-# Upscale / Variation — press U1..U4 or V1..V4 on a grid and
-# ingest the result as a new child node.
+# Upscale / Variation
 # ============================================================
 
 
