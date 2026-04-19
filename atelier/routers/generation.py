@@ -1,11 +1,15 @@
-"""Midjourney generation endpoint.
+"""Midjourney generation endpoints.
 
-Streams events from `MidjourneyService.generate()` to the client over
-SSE, and on the terminal `done` event fetches the grid image, persists
-it via the shared image-storage path, and triggers auto-description in
-the background. The frontend ultimately consumes the same `Image` row
-that manual uploads produce — generation is just a different way of
-populating it.
+Each endpoint (generate, upscale, variation) starts a background task
+that runs the MJ interaction to completion and saves the image on done,
+regardless of whether the SSE client is still connected. This means a
+page refresh mid-generation no longer loses the image — the task keeps
+running, saves the result, and the user sees it on next page load.
+
+The SSE response just tails the task's event stream. If the client
+disconnects, the subscriber is removed but the task is unaffected.
+Reconnecting clients (or new requests for the same node while the task
+is in flight) get all accumulated events replayed, then live-tail.
 """
 
 from __future__ import annotations
@@ -14,13 +18,14 @@ import asyncio
 import json
 import logging
 import mimetypes
+from dataclasses import dataclass, field
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from atelier.config import Settings
@@ -70,6 +75,72 @@ def _event_payload(event: GenerationEvent) -> dict:
     return out
 
 
+# ============================================================
+# Background generation jobs — survive client disconnects
+# ============================================================
+
+
+@dataclass
+class GenerationJob:
+    """Tracks an in-flight MJ generation/upscale/variation.
+
+    The background task pushes events via `broadcast()`. SSE handlers
+    subscribe via `tail()` which replays accumulated events then
+    live-tails. Client disconnects just remove the subscriber queue —
+    the task keeps running.
+    """
+    events: list[dict] = field(default_factory=list)
+    subscribers: list[asyncio.Queue] = field(default_factory=list)
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task | None = None
+
+    def broadcast(self, payload: dict) -> None:
+        self.events.append(payload)
+        for q in list(self.subscribers):
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass
+
+
+def _get_jobs(request: Request) -> dict[str, GenerationJob]:
+    jobs = getattr(request.app.state, "generation_jobs", None)
+    if jobs is None:
+        jobs = {}
+        request.app.state.generation_jobs = jobs
+    return jobs
+
+
+def _tail_job(job: GenerationJob) -> StreamingResponse:
+    """Return an SSE response that tails a GenerationJob."""
+    async def stream():
+        q: asyncio.Queue[dict] = asyncio.Queue()
+        # Replay events that already happened (for reconnecting clients).
+        for e in list(job.events):
+            await q.put(e)
+        job.subscribers.append(q)
+        try:
+            while True:
+                payload = await q.get()
+                yield _sse(payload)
+                if payload.get("type") in ("done", "error"):
+                    return
+        except asyncio.CancelledError:
+            # Client disconnected — task keeps running.
+            pass
+        finally:
+            if q in job.subscribers:
+                job.subscribers.remove(q)
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+# ============================================================
+# Generate — /imagine
+# ============================================================
+
+
 @router.post("/generate")
 async def generate(
     project_id: int,
@@ -79,136 +150,58 @@ async def generate(
     settings: Settings = Depends(get_settings),
     mj: MidjourneyService = Depends(get_midjourney),
 ):
-    """Generate an image for a node via Midjourney.
-
-    Streams events as SSE: `queued` → `progress*` → `done` (with the
-    persisted image's id and filename) or `error`. The terminal `done`
-    event arrives only after the grid has been downloaded and saved, so
-    the frontend can immediately render the local image without a
-    second round-trip.
-    """
     node = await _get_node(db, project_id, node_id)
     prompt_text = (node.prompt_text or "").strip()
     if not prompt_text:
         raise HTTPException(400, "Node has no prompt text to generate from")
 
-    async def stream():
+    jobs = _get_jobs(request)
+    key = f"generate:{project_id}:{node_id}"
+
+    # If a job is already running for this node, tail it.
+    existing = jobs.get(key)
+    if existing and not existing.done.is_set():
+        return _tail_job(existing)
+
+    job = GenerationJob()
+    jobs[key] = job
+
+    session_factory = request.app.state.session_factory
+    claude_cli = request.app.state.claude_cli
+
+    async def run():
         try:
             async for event in mj.generate(prompt_text):
                 if event.type == "done" and event.image_url:
-                    # Replace the raw "done" event with one that also
-                    # carries the local image id/filename, so the
-                    # frontend doesn't need a separate fetch.
                     payload = await _ingest_grid(
-                        db=db,
-                        request=request,
+                        session_factory=session_factory,
                         settings=settings,
+                        claude_cli=claude_cli,
                         project_id=project_id,
                         node_id=node_id,
                         grid_url=event.image_url,
                         discord_message_id=event.discord_message_id,
                         discord_channel_id=event.discord_channel_id,
                     )
-                    yield _sse(payload)
+                    job.broadcast(payload)
                     return
-
-                yield _sse(_event_payload(event))
-
+                job.broadcast(_event_payload(event))
                 if event.type == "error":
                     return
+        except Exception as e:
+            logger.exception("generation task failed for node_id=%s", node_id)
+            job.broadcast({"type": "error", "message": str(e)})
         finally:
-            yield "data: [DONE]\n\n"
+            job.done.set()
+            await asyncio.sleep(120)
+            jobs.pop(key, None)
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
-
-
-async def _ingest_grid(
-    db: AsyncSession,
-    request: Request,
-    settings: Settings,
-    project_id: int,
-    node_id: int,
-    grid_url: str,
-    discord_message_id: str | None,
-    discord_channel_id: str | None,
-) -> dict:
-    """Download the MJ grid, persist it, and schedule auto-description.
-
-    Returns either a `done` payload (with image id, filename, source url)
-    or an `error` payload. Always returns a dict — never raises into the
-    SSE stream.
-    """
-    try:
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=60,
-            headers={"User-Agent": "Atelier/0.1"},
-        ) as client:
-            resp = await client.get(grid_url)
-        if resp.status_code != 200:
-            return {
-                "type": "error",
-                "message": f"failed to fetch MJ grid (HTTP {resp.status_code})",
-            }
-    except httpx.RequestError as e:
-        return {"type": "error", "message": f"failed to fetch MJ grid: {e}"}
-
-    content_type = resp.headers.get("content-type", "")
-    ext = mimetypes.guess_extension(content_type.split(";")[0]) or ".png"
-    if ext == ".jpe":
-        ext = ".jpg"
-
-    try:
-        # Re-fetch the node — the original instance was loaded before
-        # the long-running stream started, and we want a fresh view of
-        # any existing image relationship before overwriting it.
-        node = await _get_node(db, project_id, node_id)
-        image = await save_image(
-            db, settings, node, project_id, node_id, resp.content, ext
-        )
-        # Clear any stale description from a prior image on this node.
-        image.description = None
-        # Tag this image as an MJ grid with its Discord provenance so the
-        # frontend can expose quadrant actions (U1–U4 / V1–V4) that talk
-        # to MidjourneyService via the original message.
-        image.kind = "grid"
-        image.discord_message_id = discord_message_id
-        image.discord_channel_id = discord_channel_id
-        await db.flush()
-        # Commit explicitly so the row is durable before we yield the
-        # done event — the dependency's final commit will be a no-op.
-        await db.commit()
-    except Exception as e:
-        logger.exception("failed to persist MJ grid for node_id=%s", node_id)
-        return {"type": "error", "message": f"failed to save MJ grid: {e}"}
-
-    # Auto-description, fire-and-forget. Using asyncio.create_task
-    # rather than FastAPI BackgroundTasks because we're already inside
-    # the streaming response body, where BackgroundTasks behavior is
-    # less predictable. The task takes a session_factory and creates
-    # its own session, so it's safe to detach.
-    asyncio.create_task(
-        generate_description_task(
-            request.app.state.session_factory,
-            image.id,
-            image_dir(settings, project_id) / image.filename,
-            request.app.state.claude_cli,
-        )
-    )
-
-    return {
-        "type": "done",
-        "image_url": grid_url,
-        "image_id": image.id,
-        "filename": image.filename,
-    }
+    job.task = asyncio.create_task(run())
+    return _tail_job(job)
 
 
 # ============================================================
-# Image CDN URL — re-fetch a live Discord CDN URL for an MJ
-# image so it can be used as a --cref / --sref reference in a
-# new prompt. MJ CDN URLs have signed tokens that expire, so
-# we can't persist them — fetch on demand each time.
+# Image CDN URL
 # ============================================================
 
 
@@ -252,7 +245,6 @@ class QuadrantRequest(BaseModel):
 
 
 def _validate_grid_parent(parent: PromptNode) -> None:
-    """Raise 400 if the node isn't a grid with Discord provenance."""
     if not parent.image or parent.image.kind not in ("grid", "variation"):
         raise HTTPException(
             400, "Upscale/variation is only available on MJ grid images."
@@ -275,37 +267,58 @@ async def upscale(
     settings: Settings = Depends(get_settings),
     mj: MidjourneyService = Depends(get_midjourney),
 ):
-    """Upscale one quadrant of a grid and stream the result as a child."""
     parent = await _get_node(db, project_id, node_id)
     _validate_grid_parent(parent)
 
-    async def stream():
+    jobs = _get_jobs(request)
+    key = f"upscale:{project_id}:{node_id}:U{body.quadrant}"
+
+    existing = jobs.get(key)
+    if existing and not existing.done.is_set():
+        return _tail_job(existing)
+
+    job = GenerationJob()
+    jobs[key] = job
+
+    grid_msg_id = parent.image.discord_message_id
+    grid_chan_id = parent.image.discord_channel_id
+    parent_prompt = parent.prompt_text
+    quadrant = body.quadrant
+    session_factory = request.app.state.session_factory
+    claude_cli = request.app.state.claude_cli
+
+    async def run():
         try:
-            async for event in mj.upscale(
-                parent.image.discord_message_id,
-                parent.image.discord_channel_id,
-                body.quadrant,
-            ):
+            async for event in mj.upscale(grid_msg_id, grid_chan_id, quadrant):
                 if event.type == "done" and event.image_url:
                     payload = await _ingest_action(
-                        db=db, request=request, settings=settings,
-                        project_id=project_id, parent_node_id=node_id,
-                        parent_prompt_text=parent.prompt_text,
-                        child_name=f"U{body.quadrant}",
+                        session_factory=session_factory,
+                        settings=settings,
+                        claude_cli=claude_cli,
+                        project_id=project_id,
+                        parent_node_id=node_id,
+                        parent_prompt_text=parent_prompt,
+                        child_name=f"U{quadrant}",
                         image_kind="upscale",
                         image_url=event.image_url,
                         discord_message_id=event.discord_message_id,
                         discord_channel_id=event.discord_channel_id,
                     )
-                    yield _sse(payload)
+                    job.broadcast(payload)
                     return
-                yield _sse(_event_payload(event))
+                job.broadcast(_event_payload(event))
                 if event.type == "error":
                     return
+        except Exception as e:
+            logger.exception("upscale task failed for node_id=%s U%d", node_id, quadrant)
+            job.broadcast({"type": "error", "message": str(e)})
         finally:
-            yield "data: [DONE]\n\n"
+            job.done.set()
+            await asyncio.sleep(120)
+            jobs.pop(key, None)
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    job.task = asyncio.create_task(run())
+    return _tail_job(job)
 
 
 @router.post("/variation")
@@ -318,48 +331,145 @@ async def variation(
     settings: Settings = Depends(get_settings),
     mj: MidjourneyService = Depends(get_midjourney),
 ):
-    """Vary one quadrant of a grid and stream the result as a child.
-
-    Variations produce a new 2x2 grid seeded by the chosen quadrant.
-    The child node's image.kind is 'variation' and the quadrant strip
-    will render on it so the user can upscale/vary from the new grid.
-    """
     parent = await _get_node(db, project_id, node_id)
     _validate_grid_parent(parent)
 
-    async def stream():
+    jobs = _get_jobs(request)
+    key = f"variation:{project_id}:{node_id}:V{body.quadrant}"
+
+    existing = jobs.get(key)
+    if existing and not existing.done.is_set():
+        return _tail_job(existing)
+
+    job = GenerationJob()
+    jobs[key] = job
+
+    grid_msg_id = parent.image.discord_message_id
+    grid_chan_id = parent.image.discord_channel_id
+    parent_prompt = parent.prompt_text
+    quadrant = body.quadrant
+    session_factory = request.app.state.session_factory
+    claude_cli = request.app.state.claude_cli
+
+    async def run():
         try:
-            async for event in mj.variation(
-                parent.image.discord_message_id,
-                parent.image.discord_channel_id,
-                body.quadrant,
-            ):
+            async for event in mj.variation(grid_msg_id, grid_chan_id, quadrant):
                 if event.type == "done" and event.image_url:
                     payload = await _ingest_action(
-                        db=db, request=request, settings=settings,
-                        project_id=project_id, parent_node_id=node_id,
-                        parent_prompt_text=parent.prompt_text,
-                        child_name=f"V{body.quadrant}",
+                        session_factory=session_factory,
+                        settings=settings,
+                        claude_cli=claude_cli,
+                        project_id=project_id,
+                        parent_node_id=node_id,
+                        parent_prompt_text=parent_prompt,
+                        child_name=f"V{quadrant}",
                         image_kind="variation",
                         image_url=event.image_url,
                         discord_message_id=event.discord_message_id,
                         discord_channel_id=event.discord_channel_id,
                     )
-                    yield _sse(payload)
+                    job.broadcast(payload)
                     return
-                yield _sse(_event_payload(event))
+                job.broadcast(_event_payload(event))
                 if event.type == "error":
                     return
+        except Exception as e:
+            logger.exception("variation task failed for node_id=%s V%d", node_id, quadrant)
+            job.broadcast({"type": "error", "message": str(e)})
         finally:
-            yield "data: [DONE]\n\n"
+            job.done.set()
+            await asyncio.sleep(120)
+            jobs.pop(key, None)
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    job.task = asyncio.create_task(run())
+    return _tail_job(job)
+
+
+# ============================================================
+# Ingest helpers — download MJ result and persist. These use
+# session_factory (not a request-scoped db session) so they
+# work inside background tasks that outlive the HTTP request.
+# ============================================================
+
+
+async def _ingest_grid(
+    session_factory: async_sessionmaker,
+    settings: Settings,
+    claude_cli: str | None,
+    project_id: int,
+    node_id: int,
+    grid_url: str,
+    discord_message_id: str | None,
+    discord_channel_id: str | None,
+) -> dict:
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=60,
+            headers={"User-Agent": "Atelier/0.1"},
+        ) as client:
+            resp = await client.get(grid_url)
+        if resp.status_code != 200:
+            return {
+                "type": "error",
+                "message": f"failed to fetch MJ grid (HTTP {resp.status_code})",
+            }
+    except httpx.RequestError as e:
+        return {"type": "error", "message": f"failed to fetch MJ grid: {e}"}
+
+    content_type = resp.headers.get("content-type", "")
+    ext = mimetypes.guess_extension(content_type.split(";")[0]) or ".png"
+    if ext == ".jpe":
+        ext = ".jpg"
+
+    try:
+        async with session_factory() as db:
+            result = await db.execute(
+                select(PromptNode)
+                .where(PromptNode.id == node_id, PromptNode.project_id == project_id)
+                .options(selectinload(PromptNode.image).selectinload(Image.tags))
+            )
+            node = result.scalar_one_or_none()
+            if not node:
+                return {"type": "error", "message": f"node {node_id} not found"}
+
+            image = await save_image(
+                db, settings, node, project_id, node_id, resp.content, ext
+            )
+            image.description = None
+            image.kind = "grid"
+            image.discord_message_id = discord_message_id
+            image.discord_channel_id = discord_channel_id
+            await db.flush()
+            await db.commit()
+
+            image_id = image.id
+            filename = image.filename
+    except Exception as e:
+        logger.exception("failed to persist MJ grid for node_id=%s", node_id)
+        return {"type": "error", "message": f"failed to save MJ grid: {e}"}
+
+    asyncio.create_task(
+        generate_description_task(
+            session_factory,
+            image_id,
+            image_dir(settings, project_id) / filename,
+            claude_cli,
+        )
+    )
+
+    return {
+        "type": "done",
+        "image_url": grid_url,
+        "image_id": image_id,
+        "filename": filename,
+    }
 
 
 async def _ingest_action(
-    db: AsyncSession,
-    request: Request,
+    session_factory: async_sessionmaker,
     settings: Settings,
+    claude_cli: str | None,
     project_id: int,
     parent_node_id: int,
     parent_prompt_text: str,
@@ -369,11 +479,6 @@ async def _ingest_action(
     discord_message_id: str | None,
     discord_channel_id: str | None,
 ) -> dict:
-    """Download a MJ result, create a child node, persist the image.
-
-    Shared by both upscale and variation endpoints. Child-node creation
-    happens on `done` so MJ errors don't leave orphaned empty nodes.
-    """
     try:
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -395,24 +500,29 @@ async def _ingest_action(
         ext = ".jpg"
 
     try:
-        child = PromptNode(
-            project_id=project_id,
-            parent_id=parent_node_id,
-            name=child_name,
-            prompt_text=parent_prompt_text,
-        )
-        db.add(child)
-        await db.flush()
-        await db.refresh(child, attribute_names=["image"])
-        image = await save_image(
-            db, settings, child, project_id, child.id, resp.content, ext
-        )
-        image.kind = image_kind
-        image.discord_message_id = discord_message_id
-        image.discord_channel_id = discord_channel_id
-        image.description = None
-        await db.flush()
-        await db.commit()
+        async with session_factory() as db:
+            child = PromptNode(
+                project_id=project_id,
+                parent_id=parent_node_id,
+                name=child_name,
+                prompt_text=parent_prompt_text,
+            )
+            db.add(child)
+            await db.flush()
+            await db.refresh(child, attribute_names=["image"])
+            image = await save_image(
+                db, settings, child, project_id, child.id, resp.content, ext
+            )
+            image.kind = image_kind
+            image.discord_message_id = discord_message_id
+            image.discord_channel_id = discord_channel_id
+            image.description = None
+            await db.flush()
+            await db.commit()
+
+            image_id = image.id
+            filename = image.filename
+            child_id = child.id
     except Exception as e:
         logger.exception(
             "failed to persist MJ %s under parent node_id=%s",
@@ -422,17 +532,17 @@ async def _ingest_action(
 
     asyncio.create_task(
         generate_description_task(
-            request.app.state.session_factory,
-            image.id,
-            image_dir(settings, project_id) / image.filename,
-            request.app.state.claude_cli,
+            session_factory,
+            image_id,
+            image_dir(settings, project_id) / filename,
+            claude_cli,
         )
     )
 
     return {
         "type": "done",
         "image_url": image_url,
-        "image_id": image.id,
-        "filename": image.filename,
-        "node_id": child.id,
+        "image_id": image_id,
+        "filename": filename,
+        "node_id": child_id,
     }
