@@ -878,16 +878,10 @@ document.addEventListener('paste', (e) => {
     const plain = cb.getData('text/plain');
     const url = extractImageUrl(html) || extractImageUrl(plain);
     if (url) {
-        // Don't hijack paste if user is typing in a text field and it's not an image URL
+        // Don't hijack paste when user is typing in a text field — they're
+        // probably pasting a URL as a --cref/--sref/--oref reference.
         const active = document.activeElement?.tagName;
-        if (active === 'TEXTAREA' || active === 'INPUT') {
-            // Only hijack if it really looks like an image URL
-            if (!/\.(png|jpe?g|gif|webp)/i.test(url) &&
-                !url.includes('cdn.discordapp.com') &&
-                !url.includes('media.discordapp.net')) {
-                return;
-            }
-        }
+        if (active === 'TEXTAREA' || active === 'INPUT') return;
         e.preventDefault();
         handleImageUrl(url);
         return;
