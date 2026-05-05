@@ -11,6 +11,12 @@
 </head>
 <body>
     <div id="app">
+        <nav id="mobile-nav" class="mobile-nav">
+            <button id="mobile-tree-btn" class="mobile-nav-btn" title="Prompt tree">Tree</button>
+            <span class="mobile-nav-title">Atelier</span>
+            <button id="mobile-coach-btn" class="mobile-nav-btn" title="Coach">Coach</button>
+        </nav>
+
         <aside id="sidebar">
             <header class="sidebar-header">
                 <h1 class="logo">Atelier</h1>
@@ -173,6 +179,8 @@
             </div>
         </form>
     </dialog>
+
+    <div id="mobile-backdrop" class="mobile-backdrop"></div>
 
     <div id="lightbox" class="lightbox" hidden>
         <button id="lightbox-close" class="lightbox-close" title="Close (Esc)">&times;</button>

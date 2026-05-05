@@ -1699,5 +1699,47 @@ $('#star-checkbox').addEventListener('change', async () => {
     await loadTree();
 });
 
+// ===== Mobile panel toggles =====
+const mobileBackdrop = $('#mobile-backdrop');
+const sidebar = $('#sidebar');
+const coachingSidebar = $('#coaching-sidebar');
+
+function closeMobilePanels() {
+    sidebar.classList.remove('open');
+    coachingSidebar.classList.remove('open');
+    mobileBackdrop.classList.remove('visible');
+    $('#mobile-tree-btn').classList.remove('active');
+    $('#mobile-coach-btn').classList.remove('active');
+}
+
+$('#mobile-tree-btn').addEventListener('click', () => {
+    const opening = !sidebar.classList.contains('open');
+    closeMobilePanels();
+    if (opening) {
+        sidebar.classList.add('open');
+        mobileBackdrop.classList.add('visible');
+        $('#mobile-tree-btn').classList.add('active');
+    }
+});
+
+$('#mobile-coach-btn').addEventListener('click', () => {
+    const opening = !coachingSidebar.classList.contains('open');
+    closeMobilePanels();
+    if (opening) {
+        coachingSidebar.classList.add('open');
+        mobileBackdrop.classList.add('visible');
+        $('#mobile-coach-btn').classList.add('active');
+    }
+});
+
+mobileBackdrop.addEventListener('click', closeMobilePanels);
+
+// Close mobile panels when a tree node is selected (navigates to workspace).
+const origSelectNode = selectNode;
+// Monkey-patch isn't needed — just close panels on any tree item click.
+document.getElementById('prompt-tree').addEventListener('click', (e) => {
+    if (e.target.closest('.tree-item')) closeMobilePanels();
+});
+
 // ===== Init =====
 navigateToRoute();
