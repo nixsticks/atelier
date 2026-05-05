@@ -461,56 +461,38 @@ function extractCoachSuggestedPrompt() {
     return null;
 }
 
-// The ref selector only makes sense when the current node has an
-// MJ-originated image — only those have the Discord message id the
-// backend needs to re-fetch a live CDN URL.
+// Always show the ref selector. If the source node has a live MJ image we
+// can auto-fetch its CDN URL on submit; otherwise the user must paste a URL
+// into the ref-url input.
 function configureIterateRefSelector() {
     const section = $('#iterate-ref-section');
+    section.hidden = false;
     const img = state.currentNode?.image;
     const mjKinds = ['grid', 'upscale', 'variation'];
-    const canRef = img && mjKinds.includes(img.kind)
+    const canAutoRef = img && mjKinds.includes(img.kind)
         && img.discord_message_id && img.discord_channel_id;
-    section.hidden = !canRef;
-    // Always reset to "None" when opening the dialog — stale selection
-    // from a previous open would be surprising.
+    const label = $('#iterate-ref-label-text');
+    label.textContent = canAutoRef
+        ? "Use this node's image as"
+        : 'Reference image (paste URL below)';
+    // Always reset selection + URL input when opening the dialog.
     const none = section.querySelector('input[value=""]');
     if (none) none.checked = true;
-    updateIterateRefWarning();
+    const urlInput = $('#iterate-ref-url');
+    urlInput.value = '';
+    urlInput.hidden = true;
 }
 
-// Detects `--niji` in a prompt. Returns the version number if present
-// (defaulting bare `--niji` to 7, MJ's current niji). null if absent.
-function detectNijiVersion(prompt) {
-    const m = /--niji(?:\s+(\d+(?:\.\d+)?))?/i.exec(prompt || '');
-    if (!m) return null;
-    return m[1] ? parseFloat(m[1]) : 7;
-}
-
-// Returns a human-readable incompatibility string, or null if OK.
-// Compatibility table per ~/.claude/skills/midjourney/knowledge/character-consistency.md:
-//   --oref: V7/V8 only (no --niji of any version)
-//   --cref: V6/V6.1 and Niji 6 (NOT Niji 7)
-//   --sref: works with everything
-function refIncompatibility(refFlag, prompt) {
-    if (!refFlag || refFlag === '--sref' || refFlag === 'niji6-cref') return null;
-    const niji = detectNijiVersion(prompt);
-    if (niji === null) return null;
-    if (refFlag === '--oref') {
-        return `${refFlag} isn't supported with --niji (Omni Reference is V7/V8 only).`;
-    }
-    if (refFlag === '--cref' && niji >= 7) {
-        return `${refFlag} isn't supported with --niji ${niji}. --cref works on V6/V6.1 and Niji 6 only.`;
-    }
-    return null;
+// Strip any existing ref flags (--oref, --cref, --sref) and their
+// URL/value arguments from a prompt so they don't stack up.
+function stripRefFlags(prompt) {
+    return (prompt || '').replace(/--[ocs]ref\s+\S+\s*/gi, '').trim();
 }
 
 function stripNijiFromPrompt(prompt) {
     return (prompt || '').replace(/--niji(?:\s+\d+(?:\.\d+)?)?\s*/gi, '').trim();
 }
 
-// Strip all model version flags (--niji X, --v X, --version X) so
-// the "Niji 6 + --cref" preset can inject a clean --niji 6 without
-// conflicting with whatever was in the prompt before.
 function stripModelFlags(prompt) {
     return (prompt || '')
         .replace(/--niji(?:\s+\d+(?:\.\d+)?)?\s*/gi, '')
@@ -518,32 +500,63 @@ function stripModelFlags(prompt) {
         .trim();
 }
 
-function updateIterateRefWarning() {
-    const warnEl = $('#iterate-ref-warning');
+// Prepares a prompt for the selected ref type: strips conflicting
+// flags and adds required model flags. Called live on radio change
+// (so the user sees the cleanup in the textarea) and again on submit.
+// Returns { prompt, flag } where flag is the MJ param to append.
+function preparePromptForRef(prompt, refChoice) {
+    if (!refChoice) return { prompt, flag: null };
+
+    // Always strip old ref flags — don't stack --cref + --oref etc.
+    let clean = stripRefFlags(prompt);
+
+    if (refChoice === 'niji6-cref') {
+        clean = stripModelFlags(clean);
+        clean = `${clean} --niji 6`;
+        return { prompt: clean, flag: '--cref' };
+    }
+
+    if (refChoice === '--oref') {
+        // Omni ref needs V7/V8, not niji.
+        clean = stripNijiFromPrompt(clean);
+        if (!/--(?:v|version)\s/i.test(clean)) {
+            clean = `${clean} --v 7`;
+        }
+        return { prompt: clean, flag: '--oref' };
+    }
+
+    if (refChoice === '--cref') {
+        // Legacy cref — works on V6 / Niji 6. Strip niji 7+.
+        const nijiMatch = /--niji(?:\s+(\d+(?:\.\d+)?))?/i.exec(clean);
+        if (nijiMatch) {
+            const ver = nijiMatch[1] ? parseFloat(nijiMatch[1]) : 7;
+            if (ver >= 7) clean = stripNijiFromPrompt(clean);
+        }
+        return { prompt: clean, flag: '--cref' };
+    }
+
+    if (refChoice === '--sref') {
+        // Style ref works everywhere — just clean old refs.
+        return { prompt: clean, flag: '--sref' };
+    }
+
+    return { prompt, flag: null };
+}
+
+// On radio change, auto-clean the prompt textarea so the user sees
+// exactly what will be submitted. URL is appended at submit time.
+$('#iterate-ref-section').addEventListener('change', (e) => {
+    if (e.target.name !== 'iterate-ref') return;
     const checked = $('#iterate-ref-section').querySelector(
         'input[name="iterate-ref"]:checked'
     );
-    const refFlag = checked?.value || '';
-    const msg = refIncompatibility(refFlag, $('#iterate-prompt-text').value);
-    if (!msg) { warnEl.hidden = true; warnEl.innerHTML = ''; return; }
-    warnEl.hidden = false;
-    warnEl.innerHTML = `<span>${msg}</span>`;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn-sm';
-    btn.textContent = 'Strip --niji';
-    btn.addEventListener('click', () => {
-        const promptEl = $('#iterate-prompt-text');
-        promptEl.value = stripNijiFromPrompt(promptEl.value);
-        updateIterateRefWarning();
-    });
-    warnEl.appendChild(btn);
-}
-
-// Keep the warning in sync with both user actions: radio change AND
-// edits to the prompt textarea. Wired once at module init.
-$('#iterate-ref-section').addEventListener('change', updateIterateRefWarning);
-$('#iterate-prompt-text').addEventListener('input', updateIterateRefWarning);
+    const urlInput = $('#iterate-ref-url');
+    urlInput.hidden = !checked?.value;
+    if (!checked?.value) return;
+    const el = $('#iterate-prompt-text');
+    const { prompt } = preparePromptForRef(el.value, checked.value);
+    el.value = prompt;
+});
 
 $('#iterate-btn').addEventListener('click', () => {
     if (!state.currentNode) return;
@@ -582,35 +595,30 @@ $('#iterate-dialog').querySelector('form').addEventListener('submit', async (e) 
 
     let promptText = $('#iterate-prompt-text').value;
 
-    // Handle image-reference options. The radio value is either a raw
-    // MJ flag (--oref, --cref, --sref) or the composite preset
-    // "niji6-cref" which switches the model AND adds --cref.
+    // Handle image-reference options. preparePromptForRef strips
+    // conflicting flags and adds required model flags. We then
+    // fetch the live CDN URL and append the ref param.
     const refChoice = $('#iterate-ref-section').querySelector(
         'input[name="iterate-ref"]:checked'
     )?.value;
 
     if (refChoice) {
-        let refFlag;
-        if (refChoice === 'niji6-cref') {
-            // Strip any existing model flag so we don't clash, then
-            // inject --niji 6 and use --cref.
-            promptText = stripModelFlags(promptText);
-            promptText = `${promptText.trim()} --niji 6`;
-            refFlag = '--cref';
-        } else {
-            refFlag = refChoice;
-        }
-
-        if (!promptText.includes(refFlag)) {
-            try {
-                const { url } = await api.getImageCdnUrl(
-                    state.currentProject.id, state.currentNode.id
-                );
-                promptText = `${promptText.trim()} ${refFlag} ${url}`;
-            } catch (err) {
-                toast(`Couldn't fetch reference URL: ${err.message}`);
-                return;  // abort — don't create a node without the ref
+        const { prompt: prepared, flag } = preparePromptForRef(promptText, refChoice);
+        promptText = prepared;
+        if (flag) {
+            const pastedUrl = $('#iterate-ref-url').value.trim();
+            let url = pastedUrl;
+            if (!url) {
+                try {
+                    ({ url } = await api.getImageCdnUrl(
+                        state.currentProject.id, state.currentNode.id
+                    ));
+                } catch (err) {
+                    toast(`Paste a reference URL or pick a node with an MJ image: ${err.message}`);
+                    return;
+                }
             }
+            promptText = `${promptText.trim()} ${flag} ${url}`;
         }
     }
 
@@ -667,6 +675,14 @@ $('#new-root-btn').addEventListener('click', () => {
     $('#iterate-notes').value = '';
     resetRootImageUi();
     $('#root-image-section').hidden = false;
+    // No source node, so the user must paste a ref URL if they pick one.
+    const section = $('#iterate-ref-section');
+    section.hidden = false;
+    $('#iterate-ref-label-text').textContent = 'Reference image (paste URL below)';
+    section.querySelector('input[value=""]').checked = true;
+    const urlInput = $('#iterate-ref-url');
+    urlInput.value = '';
+    urlInput.hidden = true;
     $('#iterate-dialog').showModal();
     $('#iterate-dialog').dataset.mode = 'root';
 });
@@ -716,9 +732,27 @@ const origSubmit = $('#iterate-dialog').querySelector('form');
 origSubmit.addEventListener('submit', async function rootHandler(e) {
     if ($('#iterate-dialog').dataset.mode !== 'root') return;
     e.preventDefault();
+
+    let promptText = $('#iterate-prompt-text').value;
+    const refChoice = $('#iterate-ref-section').querySelector(
+        'input[name="iterate-ref"]:checked'
+    )?.value;
+    if (refChoice) {
+        const { prompt: prepared, flag } = preparePromptForRef(promptText, refChoice);
+        promptText = prepared;
+        if (flag) {
+            const url = $('#iterate-ref-url').value.trim();
+            if (!url) {
+                toast('Paste a reference URL or set the ref to None');
+                return;
+            }
+            promptText = `${promptText.trim()} ${flag} ${url}`;
+        }
+    }
+
     const data = {
         name: $('#iterate-name').value || null,
-        prompt_text: $('#iterate-prompt-text').value,
+        prompt_text: promptText,
         notes: $('#iterate-notes').value || null,
     };
     const newNode = await api.createNode(state.currentProject.id, data);

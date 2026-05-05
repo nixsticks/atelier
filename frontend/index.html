@@ -155,7 +155,7 @@
             <textarea id="iterate-prompt-text" placeholder="Refined prompt..." rows="4"></textarea>
             <textarea id="iterate-notes" placeholder="Notes on what changed..." rows="2"></textarea>
             <div id="iterate-ref-section" class="iterate-ref" hidden>
-                <label class="iterate-ref-label">Use this image as</label>
+                <label class="iterate-ref-label" id="iterate-ref-label-text">Reference image</label>
                 <div class="iterate-ref-options">
                     <label><input type="radio" name="iterate-ref" value="" checked> None</label>
                     <label><input type="radio" name="iterate-ref" value="niji6-cref"> Niji 6 + --cref (anime character)</label>
@@ -163,7 +163,7 @@
                     <label><input type="radio" name="iterate-ref" value="--cref"> --cref (character — V6 / Niji 6)</label>
                     <label><input type="radio" name="iterate-ref" value="--sref"> --sref (style — all models)</label>
                 </div>
-                <div id="iterate-ref-warning" class="iterate-ref-warning" hidden></div>
+                <input id="iterate-ref-url" type="text" placeholder="Reference URL (paste, or leave blank to use this node's image)" hidden>
             </div>
             <div id="root-image-section" hidden>
                 <div id="root-image-dropzone" class="dropzone">
