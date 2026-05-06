@@ -7,3 +7,11 @@ __pycache__/
 dist/
 .pytest_cache/
 scripts/
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
